@@ -3,10 +3,12 @@ const http = require("http")
 const bindHost = process.env.OPENCODE_ROUTER_HOST || "127.0.0.1"
 const bindPort = Number(process.env.OPENCODE_ROUTER_PORT || "33102")
 const targetCookie = "oc_target"
-const directoryCookie = "oc_directory"
 const maxSessions = 80
 const maxProjects = 12
 const inspectTimeoutMs = 5000
+const inspectCacheMs = 3000
+
+const inspectCache = new Map()
 
 function escapeHtml(value) {
   return String(value || "")
@@ -58,28 +60,12 @@ function getTarget(reqUrl, headers, options) {
   return parseTarget(host, port)
 }
 
-function setCookies(res, items) {
-  const next = items.filter(Boolean)
-  if (!next.length) return
-  res.setHeader("Set-Cookie", next)
-}
-
 function setTargetCookie(res, target) {
-  setCookies(res, [`${targetCookie}=${target.host}:${target.port}; Path=/; Max-Age=2592000; SameSite=Lax`])
-}
-
-function setContextCookies(res, target, directory) {
-  const items = []
-  if (target?.host && target?.port) items.push(`${targetCookie}=${target.host}:${target.port}; Path=/; Max-Age=2592000; SameSite=Lax`)
-  if (directory) items.push(`${directoryCookie}=${encodeURIComponent(String(directory))}; Path=/; Max-Age=2592000; SameSite=Lax`)
-  setCookies(res, items)
+  res.setHeader("Set-Cookie", `${targetCookie}=${target.host}:${target.port}; Path=/; Max-Age=2592000; SameSite=Lax`)
 }
 
 function clearTargetCookie(res) {
-  setCookies(res, [
-    `${targetCookie}=; Path=/; Max-Age=0; SameSite=Lax`,
-    `${directoryCookie}=; Path=/; Max-Age=0; SameSite=Lax`,
-  ])
+  res.setHeader("Set-Cookie", `${targetCookie}=; Path=/; Max-Age=0; SameSite=Lax`)
 }
 
 function json(res, code, body, extra) {
@@ -91,10 +77,10 @@ function json(res, code, body, extra) {
   res.end(JSON.stringify(body))
 }
 
-function js(res, body) {
-  res.writeHead(200, {
-    "Content-Type": "application/javascript; charset=utf-8",
-    "Cache-Control": "no-store",
+function text(res, code, body, type) {
+  res.writeHead(code, {
+    "Content-Type": `${type}; charset=utf-8`,
+    "Cache-Control": "public, max-age=86400",
   })
   res.end(body)
 }
@@ -118,18 +104,8 @@ async function fetchJson(target, path) {
   }
 }
 
-function parseDirectory(value) {
-  if (!value) return ""
-  try {
-    return decodeURIComponent(value)
-  } catch {
-    return String(value)
-  }
-}
-
-function getDirectory(reqUrl, headers) {
-  const cookies = parseCookies(headers.cookie)
-  return parseDirectory(reqUrl.searchParams.get("directory") || cookies[directoryCookie] || "")
+function encodeDir(value) {
+  return Buffer.from(String(value || ""), "utf8").toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "")
 }
 
 function latest(items) {
@@ -217,47 +193,27 @@ async function inspectTarget(target) {
   return result
 }
 
-function bootstrap() {
-  return `(function () {
-  var key = 'opencode.global.dat:server'
-  var origin = location.origin
-  var params = new URLSearchParams(location.search)
-  var session = params.get('session')
-  if (session) {
-    globalThis.process = globalThis.process || {}
-    globalThis.process.env = globalThis.process.env || {}
-    globalThis.process.env.OPENCODE_ROUTE = JSON.stringify({ type: 'session', sessionID: session })
-  }
-  function read() { try { return JSON.parse(localStorage.getItem(key) || '{}') } catch { return {} } }
-  function write(data) { localStorage.setItem(key, JSON.stringify(data)) }
-  fetch('/__oc/meta', { credentials: 'same-origin' })
-    .then(function (res) { return res.json() })
-    .then(function (meta) {
-      if (!meta || !meta.sessions || !Array.isArray(meta.sessions.directories) || !meta.sessions.directories.length) return
-      var data = read()
-      if (!Array.isArray(data.list)) data.list = []
-      if (!data.projects || typeof data.projects !== 'object') data.projects = {}
-      if (!data.lastProject || typeof data.lastProject !== 'object') data.lastProject = {}
-      var existing = Array.isArray(data.projects[origin]) ? data.projects[origin] : []
-      var merged = []
-      var seen = new Set()
-      meta.sessions.directories.forEach(function (dir, index) {
-        if (!dir || seen.has(dir)) return
-        seen.add(dir)
-        merged.push({ worktree: dir, expanded: index === 0 })
-      })
-      existing.forEach(function (item) {
-        var dir = item && item.worktree
-        if (!dir || seen.has(dir)) return
-        seen.add(dir)
-        merged.push({ worktree: dir, expanded: Boolean(item.expanded) })
-      })
-      data.projects[origin] = merged
-      if (meta.sessions.latest && meta.sessions.latest.directory) data.lastProject[origin] = meta.sessions.latest.directory
-      write(data)
+function inspectKey(target) {
+  return `${target.host}:${target.port}`
+}
+
+function inspectCached(target) {
+  const key = inspectKey(target)
+  const now = Date.now()
+  const hit = inspectCache.get(key)
+  if (hit?.value && now - hit.time < inspectCacheMs) return Promise.resolve(hit.value)
+  if (hit?.promise) return hit.promise
+  const promise = inspectTarget(target)
+    .then((value) => {
+      inspectCache.set(key, { time: Date.now(), value })
+      return value
     })
-    .catch(function () {})
-})()`
+    .catch((err) => {
+      inspectCache.delete(key)
+      throw err
+    })
+  inspectCache.set(key, { time: now, promise, value: hit?.value })
+  return promise
 }
 
 function launchPage(payload) {
@@ -282,18 +238,24 @@ function launchPage(payload) {
 <body>
   <main>
     <h1>Launching Remote OpenCode</h1>
-    <p>Seeding history for this browser origin before redirecting into the real session page.</p>
+    <p>Preparing server state, then entering the real OpenCode session.</p>
     <div class="line"><code id="status">Preparing...</code></div>
   </main>
   <script>
     const payload = ${json}
     const status = document.getElementById('status')
-    const key = 'opencode.global.dat:server'
+    const serverKey = 'opencode.global.dat:server'
+    const defaultServerKey = 'opencode.settings.dat:defaultServerUrl'
     const origin = location.origin
-    function read() { try { return JSON.parse(localStorage.getItem(key) || '{}') } catch { return {} } }
-    function write(data) { localStorage.setItem(key, JSON.stringify(data)) }
+    function read(key) { try { return JSON.parse(localStorage.getItem(key) || '{}') } catch { return {} } }
+    function write(key, value) { localStorage.setItem(key, JSON.stringify(value)) }
+    function serverKeys() {
+      const keys = [origin]
+      if (location.hostname === '127.0.0.1' || location.hostname === 'localhost') keys.unshift('local')
+      return Array.from(new Set(keys))
+    }
     function seed(meta) {
-      const data = read()
+      const data = read(serverKey)
       if (!Array.isArray(data.list)) data.list = []
       if (!data.projects || typeof data.projects !== 'object') data.projects = {}
       if (!data.lastProject || typeof data.lastProject !== 'object') data.lastProject = {}
@@ -304,20 +266,21 @@ function launchPage(payload) {
         seen.add(dir)
         merged.push({ worktree: dir, expanded: index === 0 })
       })
-      data.projects[origin] = merged
-      if (meta.sessions.latest && meta.sessions.latest.directory) data.lastProject[origin] = meta.sessions.latest.directory
-      write(data)
+      serverKeys().forEach(function (key) {
+        data.projects[key] = merged
+        if (meta.sessions.latest && meta.sessions.latest.directory) data.lastProject[key] = meta.sessions.latest.directory
+      })
+      localStorage.setItem(defaultServerKey, origin)
+      write(serverKey, data)
     }
     if (!payload.ready || !payload.sessions || !payload.sessions.latest || !payload.sessions.latest.directory || !payload.sessions.latest.id) {
       status.textContent = payload.health && payload.health.error ? payload.health.error : 'Target is not ready'
     } else {
       seed(payload)
-      status.textContent = 'History seeded. Redirecting...'
-      const next = '/oc-app'
+      status.textContent = 'Ready. Redirecting...'
+      const next = '/' + payload.launch.directory + '/session/' + encodeURIComponent(payload.launch.sessionID)
         + '?host=' + encodeURIComponent(payload.target.host)
         + '&port=' + encodeURIComponent(payload.target.port)
-        + '&directory=' + encodeURIComponent(payload.launch.directory)
-        + '&session=' + encodeURIComponent(payload.launch.sessionID)
       location.replace(next)
     }
   </script>
@@ -325,29 +288,12 @@ function launchPage(payload) {
 </html>`
 }
 
-function inject(html) {
-  const tag = '<script src="/__oc/bootstrap.js"></script>'
-  if (html.includes(tag)) return html
-  return html.replace("</head>", `${tag}</head>`)
-}
-
 function rewriteLocation(value, reqUrl, target) {
   if (!value || !value.startsWith("/")) return value
   const next = new URL(value, `http://${reqUrl.headersHost || "localhost"}`)
   next.searchParams.set("host", target.host)
   next.searchParams.set("port", target.port)
-  if (reqUrl.directory && !next.searchParams.has("directory")) next.searchParams.set("directory", reqUrl.directory)
   return `${next.pathname}${next.search}${next.hash}`
-}
-
-function upstreamPath(reqUrl, directory) {
-  const next = new URL(reqUrl.pathname, "http://upstream.local")
-  reqUrl.searchParams.forEach((value, key) => {
-    if (key === "host" || key === "port") return
-    next.searchParams.set(key, value)
-  })
-  if (directory && !next.searchParams.has("directory")) next.searchParams.set("directory", directory)
-  return `${next.pathname}${next.search}${reqUrl.hash}`
 }
 
 function landing(target) {
@@ -460,17 +406,7 @@ function landing(target) {
       try {
         const t = target()
         status.textContent = 'Restoring history...'
-        const url = '/__oc/meta?host=' + encodeURIComponent(t.host) + '&port=' + encodeURIComponent(t.port)
-        const res = await fetch(url, { credentials: 'same-origin' })
-        const data = await res.json()
-        if (!res.ok) throw new Error(data.error || ('Request failed: ' + res.status))
-        if (!data.ready || !data.sessions || !data.sessions.latest || !data.sessions.latest.directory || !data.sessions.latest.id) {
-          throw new Error(data.sessions && data.sessions.error ? data.sessions.error : 'Target is online but has no restoreable session')
-        }
-        location.href = '/oc-app?host=' + encodeURIComponent(t.host)
-          + '&port=' + encodeURIComponent(t.port)
-          + '&directory=' + encodeURIComponent(data.sessions.latest.directory)
-          + '&session=' + encodeURIComponent(data.sessions.latest.id)
+        location.href = '/__oc/launch?host=' + encodeURIComponent(t.host) + '&port=' + encodeURIComponent(t.port)
       } catch (error) {
         status.textContent = error.message || String(error)
       }
@@ -491,13 +427,20 @@ function landing(target) {
 </html>`
 }
 
+function cleanSearch(input) {
+  const next = new URLSearchParams(input)
+  next.delete("host")
+  next.delete("port")
+  const text = next.toString()
+  return text ? `?${text}` : ""
+}
+
 function proxyRequest(req, res, target, reqUrl) {
-  const directory = getDirectory(reqUrl, req.headers)
   const options = {
     hostname: target.host,
     port: Number(target.port),
     method: req.method,
-    path: upstreamPath(reqUrl, directory),
+    path: `${reqUrl.pathname}${cleanSearch(reqUrl.searchParams)}`,
     headers: {
       ...req.headers,
       host: `${target.host}:${target.port}`,
@@ -507,33 +450,15 @@ function proxyRequest(req, res, target, reqUrl) {
   }
   delete options.headers.cookie
   delete options.headers["content-length"]
-  if (directory) options.headers["x-opencode-directory"] = directory
   const upstream = http.request(options, (up) => {
     const headers = { ...up.headers }
-    const location = rewriteLocation(headers.location, { search: reqUrl.search, headersHost: req.headers.host, directory }, target)
+    const location = rewriteLocation(headers.location, { headersHost: req.headers.host }, target)
     if (location) headers.location = location
     else delete headers.location
     const wantCookie = reqUrl.searchParams.has("host") || reqUrl.searchParams.has("port")
-    if (wantCookie || directory) {
-      headers["set-cookie"] = [
-        `${targetCookie}=${target.host}:${target.port}; Path=/; Max-Age=2592000; SameSite=Lax`,
-        ...(directory ? [`${directoryCookie}=${encodeURIComponent(directory)}; Path=/; Max-Age=2592000; SameSite=Lax`] : []),
-      ]
-    }
-    const type = String(headers["content-type"] || "")
-    if (!type.includes("text/html")) {
-      res.writeHead(up.statusCode || 502, headers)
-      up.pipe(res)
-      return
-    }
-    const chunks = []
-    up.on("data", (chunk) => chunks.push(chunk))
-    up.on("end", () => {
-      const body = inject(Buffer.concat(chunks).toString("utf8"))
-      delete headers["content-length"]
-      res.writeHead(up.statusCode || 200, headers)
-      res.end(body)
-    })
+    if (wantCookie) headers["set-cookie"] = [`${targetCookie}=${target.host}:${target.port}; Path=/; Max-Age=2592000; SameSite=Lax`]
+    res.writeHead(up.statusCode || 502, headers)
+    up.pipe(res)
   })
   upstream.on("error", (err) => {
     if (res.headersSent || res.writableEnded || res.destroyed) return
@@ -554,13 +479,12 @@ function writeUpgradeResponse(socket, response) {
 }
 
 function proxyUpgrade(req, socket, head, target, reqUrl) {
-  const directory = getDirectory(reqUrl, req.headers)
   const upstream = http.request({
     hostname: target.host,
     port: Number(target.port),
     method: req.method,
-    path: upstreamPath(reqUrl, directory),
-    headers: { ...req.headers, host: `${target.host}:${target.port}`, connection: "upgrade", ...(directory ? { "x-opencode-directory": directory } : {}) },
+    path: `${reqUrl.pathname}${cleanSearch(reqUrl.searchParams)}`,
+    headers: { ...req.headers, host: `${target.host}:${target.port}`, connection: "upgrade" },
   })
   upstream.on("upgrade", (upRes, upSocket, upHead) => {
     writeUpgradeResponse(socket, upRes)
@@ -576,7 +500,29 @@ function proxyUpgrade(req, socket, head, target, reqUrl) {
 
 const server = http.createServer(async (req, res) => {
   const reqUrl = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`)
-  const isLanding = !reqUrl.pathname || reqUrl.pathname === "/" || reqUrl.pathname === "/index.html" || reqUrl.pathname === "/__landing" || reqUrl.pathname === "/entry"
+  if (reqUrl.pathname === "/favicon.ico") {
+    res.writeHead(204, { "Cache-Control": "public, max-age=86400" })
+    res.end()
+    return
+  }
+  if (reqUrl.pathname === "/site.webmanifest") {
+    text(
+      res,
+      200,
+      JSON.stringify({
+        name: "OpenCode",
+        short_name: "OpenCode",
+        display: "standalone",
+        start_url: "/",
+        background_color: "#08111d",
+        theme_color: "#08111d",
+        icons: [],
+      }),
+      "application/manifest+json",
+    )
+    return
+  }
+  const isLanding = !reqUrl.pathname || reqUrl.pathname === "/" || reqUrl.pathname === "/index.html" || reqUrl.pathname === "/__landing"
   if (isLanding) {
     const target = getTarget(reqUrl, req.headers, { allowEmpty: true, useCookie: false }) || { host: "", port: "3000" }
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" })
@@ -594,35 +540,21 @@ const server = http.createServer(async (req, res) => {
     return
   }
   const wantCookie = reqUrl.searchParams.has("host") || reqUrl.searchParams.has("port")
-  if (reqUrl.pathname === "/__oc/bootstrap.js") {
-    if (wantCookie) setTargetCookie(res, target)
-    js(res, bootstrap())
-    return
-  }
   if (reqUrl.pathname === "/__oc/meta") {
-    const payload = await inspectTarget(target)
-    const directory = payload.sessions?.latest?.directory || getDirectory(reqUrl, req.headers)
-    const extra = wantCookie || directory
-      ? {
-          "Set-Cookie": [
-            `${targetCookie}=${target.host}:${target.port}; Path=/; Max-Age=2592000; SameSite=Lax`,
-            ...(directory ? [`${directoryCookie}=${encodeURIComponent(directory)}; Path=/; Max-Age=2592000; SameSite=Lax`] : []),
-          ],
-        }
-      : undefined
+    const payload = await inspectCached(target)
+    const extra = wantCookie ? { "Set-Cookie": `${targetCookie}=${target.host}:${target.port}; Path=/; Max-Age=2592000; SameSite=Lax` } : undefined
     json(res, 200, payload, extra)
     return
   }
-  if (reqUrl.pathname === "/__oc/launch" || reqUrl.pathname === "/__oc/open") {
-    const payload = await inspectTarget(target)
-    if (payload.ready && payload.sessions && payload.sessions.latest) payload.launch = { directory: payload.sessions.latest.directory, sessionID: payload.sessions.latest.id }
-    const directory = payload.launch?.directory || getDirectory(reqUrl, req.headers)
-    if (wantCookie || directory) setContextCookies(res, target, directory)
+  if (reqUrl.pathname === "/__oc/launch") {
+    const payload = await inspectCached(target)
+    if (payload.ready && payload.sessions && payload.sessions.latest) payload.launch = { directory: encodeDir(payload.sessions.latest.directory), sessionID: payload.sessions.latest.id }
+    if (wantCookie) setTargetCookie(res, target)
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" })
     res.end(launchPage(payload))
     return
   }
-  if (wantCookie || getDirectory(reqUrl, req.headers)) setContextCookies(res, target, getDirectory(reqUrl, req.headers))
+  if (wantCookie) setTargetCookie(res, target)
   proxyRequest(req, res, target, reqUrl)
 })
 
