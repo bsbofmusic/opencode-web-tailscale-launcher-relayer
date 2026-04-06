@@ -97,7 +97,7 @@ See `launcher/oc-launcher.ini.example` for the template.
 
 The router is designed to sit behind `nginx` and a public hostname.
 
-In `v0.0.3`, the router performs a single launch-time state seed, then hands off to the real OpenCode web app through a transparent proxy. This keeps restored sessions, model state, and workspace context aligned with OpenCode's native routing protocol instead of layering a custom browser-directory protocol on top.
+In `v0.0.4`, the VPS router pre-warms a target cache before opening the real OpenCode session. That cache now holds the recent session index plus the latest session snapshot so repeat opens avoid the same cold remote reads, while the launch page shows which stage the VPS is reading and caching.
 
 Core routes:
 
@@ -147,7 +147,7 @@ This project is released under the MIT License. See `LICENSE`.
 
 Current version:
 
-- `v0.0.3`
+- `v0.0.4`
 
 Release notes:
 
@@ -155,3 +155,4 @@ Release notes:
 - `docs/RELEASE-v0.02.md`: initial router directory-context hardening release
 - `docs/RELEASE-v0.02.1.md`: hotfix for the `v0.02` session-entry regression
 - `docs/RELEASE-v0.0.3.md`: router protocol reset with launch-time state seeding and sandbox-verified recovery
+- `docs/RELEASE-v0.0.4.md`: VPS cache warmup with staged launch progress and cached session snapshots
