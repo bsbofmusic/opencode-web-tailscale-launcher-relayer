@@ -5,15 +5,18 @@ const bindPort = Number(process.env.OPENCODE_ROUTER_PORT || "33102")
 const targetCookie = "oc_target"
 const maxSessions = 80
 const maxProjects = 12
-const inspectTimeoutMs = 5000
-const metaCacheMs = 15000
-const snapshotCacheMs = 45000
+const inspectTimeoutMs = Number(process.env.OPENCODE_ROUTER_INSPECT_TIMEOUT_MS || "5000")
+const warmTimeoutMs = Number(process.env.OPENCODE_ROUTER_WARM_TIMEOUT_MS || String(inspectTimeoutMs + 2000))
+const htmlProxyTimeoutMs = Number(process.env.OPENCODE_ROUTER_HTML_TIMEOUT_MS || "8000")
+const metaCacheMs = Number(process.env.OPENCODE_ROUTER_META_CACHE_MS || "15000")
+const snapshotCacheMs = Number(process.env.OPENCODE_ROUTER_SNAPSHOT_CACHE_MS || "45000")
 const desktopWarmSessionCount = 2
 const mobileWarmSessionCount = 1
 const maxHeavyRequestsPerTarget = 2
 const maxTargets = 8
 const targetIdleMs = 30 * 60 * 1000
 const cleanupIntervalMs = 5 * 60 * 1000
+const launchRedirectWaitMs = 1200
 
 const upstreamAgent = new http.Agent({
   keepAlive: true,
@@ -170,6 +173,15 @@ function encodeDir(value) {
   return Buffer.from(String(value || ""), "utf8").toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "")
 }
 
+function buildSessionLocation(target, launch) {
+  if (!launch?.directory || !launch?.sessionID) return null
+  return `/${launch.directory}/session/${encodeURIComponent(launch.sessionID)}?host=${encodeURIComponent(target.host)}&port=${encodeURIComponent(target.port)}`
+}
+
+function isSessionHtmlPath(pathname) {
+  return /^\/[^/]+\/session\/[^/]+$/.test(pathname)
+}
+
 function latest(items) {
   return [...items].sort((a, b) => (b.time?.updated ?? b.time?.created ?? 0) - (a.time?.updated ?? a.time?.created ?? 0))[0]
 }
@@ -242,6 +254,7 @@ function createState(target) {
     heavyQueue: [],
     backgroundActive: 0,
     backgroundQueue: [],
+    backgroundKeys: new Set(),
     stats: {
       cacheHit: 0,
       cacheMiss: 0,
@@ -253,6 +266,7 @@ function createState(target) {
     lastError: null,
     lastAccessAt: now(),
     promise: undefined,
+    promiseStartedAt: 0,
   }
 }
 
@@ -271,6 +285,66 @@ function ensureState(target) {
 
 function setWarm(state, patch) {
   state.warm = { ...state.warm, ...patch }
+}
+
+function warmBusy(state) {
+  return Boolean(state.promise || state.heavyActive || state.backgroundActive || state.backgroundQueue.length)
+}
+
+function snapshotGoal(state, requested) {
+  const latestDir = state.meta?.sessions?.latest?.directory
+  if (!latestDir) return requested
+  const available = state.sessionList.filter((item) => item?.directory === latestDir).length
+  if (!available) return requested
+  return Math.max(1, Math.min(requested, available))
+}
+
+function settleWarm(state, note) {
+  if (warmBusy(state)) return
+  const ready = Boolean(state.meta?.ready)
+  setWarm(state, {
+    active: false,
+    ready,
+    first: false,
+    percent: ready ? 100 : state.warm.percent,
+    stage: ready ? "ready" : state.warm.stage,
+    note: note || (ready ? "Background cache is ready." : state.warm.note),
+    cachedAt: ready ? now() : state.warm.cachedAt,
+  })
+}
+
+function failWarm(state, err, fallback) {
+  const message = classifyError(err, fallback)
+  state.lastError = message
+  if (state.meta?.ready) {
+    state.stats.staleLaunch += 1
+    setWarm(state, {
+      active: false,
+      ready: true,
+      first: false,
+      percent: 100,
+      stage: "ready",
+      note: "Using cached session metadata while refresh failed.",
+      cachedAt: state.warm.cachedAt || state.metaAt || now(),
+      error: message,
+    })
+    return false
+  }
+  setWarm(state, {
+    active: false,
+    ready: false,
+    percent: 100,
+    stage: "error",
+    note: message,
+    error: message,
+  })
+  return true
+}
+
+function syncWarm(state) {
+  if (!state.warm.active) return
+  if (warmBusy(state)) return
+  settleWarm(state, state.warm.error && state.meta?.ready ? "Using cached session metadata while refresh failed." : undefined)
 }
 
 function cleanupStates(force) {
@@ -325,30 +399,25 @@ function pumpBackground(state) {
   if (!next) return
   state.backgroundActive += 1
   Promise.resolve()
-    .then(next)
+    .then(next.run)
     .catch((err) => {
       state.lastError = classifyError(err, "Background cache failed")
     })
     .finally(() => {
       state.backgroundActive -= 1
-      if (!state.backgroundQueue.length) {
-        setWarm(state, {
-          active: false,
-          ready: true,
-          first: false,
-          percent: 100,
-          note: "Background cache is ready.",
-          cachedAt: now(),
-        })
-      }
+      state.backgroundKeys.delete(next.key)
+      if (!state.backgroundQueue.length) settleWarm(state)
       pumpBackground(state)
     })
 }
 
-function enqueueBackground(state, work) {
+function enqueueBackground(state, key, work) {
+  if (state.backgroundKeys.has(key)) return false
   state.stats.backgroundQueued += 1
-  state.backgroundQueue.push(work)
+  state.backgroundKeys.add(key)
+  state.backgroundQueue.push({ key, run: work })
   pumpBackground(state)
+  return true
 }
 
 function buildMeta(target, health, list, latencyMs) {
@@ -431,8 +500,39 @@ function scheduleSnapshotWarm(state, target, latestSession, nearby) {
   const messageJobs = nearby
     .map((item) => ({ item, limit: item.id === latestSession.id ? 80 : 200 }))
     .filter(({ item, limit }) => !fresh(state.messages.get(cacheKey(item.directory, item.id, limit))?.at, snapshotCacheMs))
-  const count = (needsDetail ? 1 : 0) + messageJobs.length
-  if (!count) {
+  const jobs = []
+  if (needsDetail) {
+    jobs.push({
+      key: `detail\n${latestSession.directory}\n${latestSession.id}`,
+      run: async () => {
+        setWarm(state, {
+          active: true,
+          ready: true,
+          percent: 60,
+          stage: "snapshot",
+          note: "Caching latest session detail in the background...",
+        })
+        await cacheDetail(state, target, latestSession.directory, latestSession.id)
+      },
+    })
+  }
+  messageJobs.forEach(({ item, limit }, index) => {
+    jobs.push({
+      key: `message\n${item.directory}\n${item.id}\n${limit}`,
+      run: async () => {
+        setWarm(state, {
+          active: true,
+          ready: true,
+          percent: 65 + Math.round(((index + 1) / Math.max(messageJobs.length, 1)) * 30),
+          stage: "snapshot",
+          note: `Caching session ${index + 1}/${Math.max(messageJobs.length, 1)} in the background...`,
+        })
+        await cacheMessages(state, target, item.directory, item.id, limit)
+      },
+    })
+  })
+  const pending = jobs.filter((job) => state.backgroundKeys.has(job.key)).length
+  if (!jobs.length && !pending) {
     setWarm(state, {
       active: false,
       ready: true,
@@ -449,44 +549,38 @@ function scheduleSnapshotWarm(state, target, latestSession, nearby) {
     ready: true,
     percent: 55,
     stage: "snapshot",
-    note: `Caching ${count} recent session tasks in the background...`,
+    note: `Caching ${jobs.length + pending} recent session tasks in the background...`,
     latestSessionID: latestSession.id,
     latestDirectory: latestSession.directory,
     snapshotCount: nearby.length,
   })
-  if (needsDetail) {
-    enqueueBackground(state, async () => {
-      setWarm(state, {
-        active: true,
-        ready: true,
-        percent: 60,
-        stage: "snapshot",
-        note: "Caching latest session detail in the background...",
-      })
-      await cacheDetail(state, target, latestSession.directory, latestSession.id)
-    })
-  }
-  messageJobs.forEach(({ item, limit }, index) => {
-    enqueueBackground(state, async () => {
-      setWarm(state, {
-        active: true,
-        ready: true,
-        percent: 65 + Math.round(((index + 1) / Math.max(messageJobs.length, 1)) * 30),
-        stage: "snapshot",
-        note: `Caching session ${index + 1}/${Math.max(messageJobs.length, 1)} in the background...`,
-      })
-      await cacheMessages(state, target, item.directory, item.id, limit)
-    })
+  let queued = 0
+  jobs.forEach((job) => {
+    if (enqueueBackground(state, job.key, job.run)) queued += 1
   })
+  if (!queued && pending) {
+    setWarm(state, {
+      active: true,
+      ready: true,
+      percent: 55,
+      stage: "snapshot",
+      note: "Background cache is already queued.",
+      latestSessionID: latestSession.id,
+      latestDirectory: latestSession.directory,
+      snapshotCount: nearby.length,
+    })
+    return
+  }
+  if (!queued) settleWarm(state)
 }
 
 async function warm(state, force, options) {
   const opts = options || {}
   const requestedSnapshotCount = opts.snapshotCount || desktopWarmSessionCount
   if (state.promise) return state.promise
-  if (!force && fresh(state.metaAt, metaCacheMs) && state.meta && state.warm.snapshotCount >= requestedSnapshotCount) return Promise.resolve(state.meta)
+  if (!force && fresh(state.metaAt, metaCacheMs) && state.meta && state.warm.snapshotCount >= snapshotGoal(state, requestedSnapshotCount)) return Promise.resolve(state.meta)
   const target = state.target
-  const run = (async () => {
+  const body = async () => {
     setWarm(state, {
       active: true,
       ready: false,
@@ -500,15 +594,8 @@ async function warm(state, force, options) {
     try {
       health = await fetchJson(target, "/global/health")
     } catch (err) {
-      setWarm(state, {
-        active: false,
-        ready: false,
-        percent: 100,
-        stage: "error",
-        note: classifyError(err, "Health check failed"),
-        error: classifyError(err, "Health check failed"),
-      })
-      throw err
+      if (failWarm(state, err, "Health check failed")) throw err
+      return state.meta
     }
 
     setWarm(state, {
@@ -521,15 +608,8 @@ async function warm(state, force, options) {
     try {
       sessions = await fetchJsonWith(target, `/session?limit=${maxSessions}`, { heavy: true, state })
     } catch (err) {
-      setWarm(state, {
-        active: false,
-        ready: false,
-        percent: 100,
-        stage: "error",
-        note: classifyError(err, "Session scan failed"),
-        error: classifyError(err, "Session scan failed"),
-      })
-      throw err
+      if (failWarm(state, err, "Session scan failed")) throw err
+      return state.meta
     }
 
     state.sessionList = Array.isArray(sessions.data) ? sessions.data : []
@@ -576,12 +656,23 @@ async function warm(state, force, options) {
     }
 
     return state.meta
-  })()
+  }
+  const run = Promise.race([
+    body(),
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`Warm timed out after ${warmTimeoutMs}ms`)), warmTimeoutMs)),
+  ])
+    .catch((err) => {
+      if (failWarm(state, err, "Warm refresh failed")) throw err
+      return state.meta
+    })
     .finally(() => {
       state.promise = undefined
+      state.promiseStartedAt = 0
+      syncWarm(state)
     })
 
   state.promise = run
+  state.promiseStartedAt = now()
   return run
 }
 
@@ -589,17 +680,19 @@ function refresh(state) {
   if (state.promise) return
   if (!state.meta) return
   if (fresh(state.metaAt, metaCacheMs)) return
-  void warm(state, true, { snapshotCount: state.warm.snapshotCount || desktopWarmSessionCount }).catch(() => {})
+  void warm(state, true, { snapshotCount: snapshotGoal(state, state.warm.snapshotCount || desktopWarmSessionCount) }).catch(() => {})
 }
 
 function progressPayload(state) {
+  syncWarm(state)
   const launchReady = Boolean(state.meta?.ready && state.meta?.sessions?.latest?.id && state.meta?.sessions?.latest?.directory)
+  const refreshing = warmBusy(state)
   const payload = {
     target: state.target,
     ready: state.warm.ready && Boolean(state.meta?.ready),
     launchReady,
-    refreshing: Boolean(state.warm.active),
-    cacheState: !state.meta ? "cold" : state.warm.active ? "stale" : "warm",
+    refreshing,
+    cacheState: !state.meta ? "cold" : refreshing ? "stale" : "warm",
     warm: state.warm,
     meta: state.meta || null,
   }
@@ -613,25 +706,83 @@ function progressPayload(state) {
 }
 
 function healthPayload() {
-  const summary = [...states.values()].map((state) => ({
-    target: state.target,
-    launchReady: Boolean(state.meta?.ready && state.meta?.sessions?.latest?.id),
-    refreshing: Boolean(state.warm.active),
-    snapshotCount: state.warm.snapshotCount,
-    cachedAt: state.warm.cachedAt || 0,
-    lastAccessAt: state.lastAccessAt,
-    heavyActive: state.heavyActive,
-    heavyQueued: state.heavyQueue.length,
-    backgroundActive: state.backgroundActive,
-    backgroundQueued: state.backgroundQueue.length,
-    stats: state.stats,
-    lastError: state.lastError,
-  }))
+  const summary = [...states.values()].map((state) => {
+    syncWarm(state)
+    return {
+      target: state.target,
+      launchReady: Boolean(state.meta?.ready && state.meta?.sessions?.latest?.id),
+      refreshing: warmBusy(state),
+      snapshotCount: state.warm.snapshotCount,
+      cachedAt: state.warm.cachedAt || 0,
+      lastAccessAt: state.lastAccessAt,
+      promiseActive: Boolean(state.promise),
+      promiseAgeMs: state.promiseStartedAt ? Math.max(0, now() - state.promiseStartedAt) : 0,
+      heavyActive: state.heavyActive,
+      heavyQueued: state.heavyQueue.length,
+      backgroundActive: state.backgroundActive,
+      backgroundQueued: state.backgroundQueue.length,
+      backgroundKeys: state.backgroundKeys.size,
+      warmStage: state.warm.stage,
+      stats: state.stats,
+      lastError: state.lastError,
+    }
+  })
   return {
     ok: true,
     targets: summary.length,
     states: summary,
   }
+}
+
+function sessionTimeoutPage(target, reqUrl) {
+  const sessionPath = escapeHtml(reqUrl.pathname)
+  const host = escapeHtml(target.host)
+  const port = escapeHtml(target.port)
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenCode Session Timeout</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px; background: radial-gradient(circle at top, #13233e 0, #08111d 46%); color: #eef4ff; font: 15px/1.5 Inter, "Segoe UI", sans-serif; }
+    main { width: min(760px, 100%); border: 1px solid #20314b; border-radius: 22px; padding: 22px; background: rgba(13, 21, 35, .94); box-shadow: 0 20px 60px rgba(0,0,0,.35); }
+    h1 { margin: 0 0 10px; font-size: 28px; }
+    p { margin: 10px 0 0; color: #8fa6c7; }
+    .actions { display: flex; gap: 10px; margin-top: 18px; flex-wrap: wrap; }
+    a { display: inline-flex; align-items: center; justify-content: center; padding: 11px 15px; border-radius: 12px; border: 1px solid #334155; background: #101b2b; color: #eef4ff; text-decoration: none; }
+    .primary { background: linear-gradient(180deg, #3d8cff, #2c7dff); border-color: #3279e7; }
+    code { color: #d3e3ff; word-break: break-all; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>OpenCode session page is taking too long</h1>
+    <p>The remote OpenCode HTML route did not return a page within ${htmlProxyTimeoutMs} ms. Cached session APIs may still be alive, but the application shell is not loading cleanly right now.</p>
+    <p><code>${sessionPath}</code></p>
+    <p>Target: <code>${host}:${port}</code></p>
+    <div class="actions">
+      <a class="primary" href="${escapeHtml(reqUrl.pathname + reqUrl.search)}">Retry this session</a>
+      <a href="/__oc/launch?host=${encodeURIComponent(target.host)}&port=${encodeURIComponent(target.port)}">Retry via launch</a>
+      <a href="/?host=${encodeURIComponent(target.host)}&port=${encodeURIComponent(target.port)}">Back to router</a>
+    </div>
+  </main>
+</body>
+</html>`
+}
+
+async function resolveLaunch(state, snapshotCount) {
+  const current = progressPayload(state)
+  if (current.launchReady && current.launch) return current
+  try {
+    await Promise.race([
+      warm(state, false, { snapshotCount }),
+      new Promise((resolve) => setTimeout(resolve, launchRedirectWaitMs)),
+    ])
+  } catch {}
+  return progressPayload(state)
 }
 
 function launchPage(target) {
@@ -665,6 +816,7 @@ function launchPage(target) {
     <div class="bar"><div id="fill" class="fill"></div></div>
     <div id="stage" class="line">Connecting...</div>
     <div id="note" class="hint">Preparing...</div>
+    <button id="fallback" type="button" hidden>Open cached session now</button>
     <ul>
       <li>Connect to the remote OpenCode instance</li>
       <li>Read the recent session index</li>
@@ -681,8 +833,43 @@ function launchPage(target) {
     const defaultServerKey = 'opencode.settings.dat:defaultServerUrl'
     const snapshotKey = 'opencode.router.dat:snapshot'
     const origin = location.origin
+    const fallback = document.getElementById('fallback')
+    let polls = 0
+    let cachedLaunch = null
     function read(key) { try { return JSON.parse(localStorage.getItem(key) || '{}') } catch { return {} } }
     function write(key, value) { localStorage.setItem(key, JSON.stringify(value)) }
+    function encodeDir(value) {
+      return btoa(unescape(encodeURIComponent(String(value || '')))).split('+').join('-').split('/').join('_').replace(/=+$/g, '')
+    }
+    async function fetchJson(url, timeoutMs) {
+      const ctrl = new AbortController()
+      const timer = setTimeout(function () { ctrl.abort() }, timeoutMs || 4000)
+      try {
+        const res = await fetch(url, { credentials: 'same-origin', cache: 'no-store', signal: ctrl.signal })
+        const data = await res.json()
+        return { res, data }
+      } finally {
+        clearTimeout(timer)
+      }
+    }
+    function nextUrl(launch) {
+      return '/' + launch.directory + '/session/' + encodeURIComponent(launch.sessionID)
+        + '?host=' + encodeURIComponent(target.host)
+        + '&port=' + encodeURIComponent(target.port)
+    }
+    function reveal(launch) {
+      if (!launch) return
+      cachedLaunch = launch
+      fallback.hidden = false
+    }
+    function go(launch) {
+      reveal(launch)
+      location.replace(nextUrl(launch))
+    }
+    fallback.addEventListener('click', function () {
+      if (!cachedLaunch) return
+      location.replace(nextUrl(cachedLaunch))
+    })
     function serverKeys() {
       const keys = [origin]
       if (location.hostname === '127.0.0.1' || location.hostname === 'localhost') keys.unshift('local')
@@ -719,21 +906,35 @@ function launchPage(target) {
       }
       return map[value] || 'Preparing...'
     }
+    stage.textContent = 'Connecting to remote OpenCode...'
+    note.textContent = 'Reading the VPS launch state...'
     async function tick() {
       const url = '/__oc/progress?host=' + encodeURIComponent(target.host) + '&port=' + encodeURIComponent(target.port)
-      const res = await fetch(url, { credentials: 'same-origin' })
-      const data = await res.json()
+      const result = await fetchJson(url, 4000)
+      const res = result.res
+      const data = result.data
+      polls += 1
       fill.style.width = Math.max(4, data.warm && data.warm.percent ? data.warm.percent : 4) + '%'
       stage.textContent = label(data.warm && data.warm.stage)
       note.textContent = data.warm && data.warm.note ? data.warm.note : 'Preparing...'
       if (!res.ok) throw new Error(data.error || ('Request failed: ' + res.status))
-      if (!data.launchReady || !data.meta || !data.launch) return false
-      seed(data.meta)
-      const next = '/' + data.launch.directory + '/session/' + encodeURIComponent(data.launch.sessionID)
-        + '?host=' + encodeURIComponent(target.host)
-        + '&port=' + encodeURIComponent(target.port)
-      location.replace(next)
-      return true
+      if (data.launchReady && data.launch) {
+        reveal(data.launch)
+        if (data.meta) seed(data.meta)
+        go(data.launch)
+        return true
+      }
+      if (polls % 12 === 0) {
+        const metaResult = await fetchJson('/__oc/meta?host=' + encodeURIComponent(target.host) + '&port=' + encodeURIComponent(target.port), 4000)
+        const metaRes = metaResult.res
+        const meta = metaResult.data
+        if (metaRes.ok && meta && meta.ready && meta.sessions && meta.sessions.latest) {
+          seed(meta)
+          go({ directory: encodeDir(meta.sessions.latest.directory), sessionID: meta.sessions.latest.id })
+          return true
+        }
+      }
+      return false
     }
     async function loop() {
       for (;;) {
@@ -743,7 +944,13 @@ function launchPage(target) {
         } catch (error) {
           stage.textContent = 'The VPS could not warm this target.'
           note.textContent = error && error.message ? error.message : String(error)
-          return
+          if (cachedLaunch) {
+            fallback.hidden = false
+            note.textContent += ' You can open the cached session now.'
+            await new Promise((resolve) => setTimeout(resolve, 1500))
+            location.replace(nextUrl(cachedLaunch))
+            return
+          }
         }
         await new Promise((resolve) => setTimeout(resolve, 450))
       }
@@ -905,6 +1112,7 @@ function cleanSearch(input) {
 
 function maybeServeCached(req, res, state, reqUrl) {
   if (req.method !== "GET") return false
+  syncWarm(state)
   touchState(state)
   const directory = reqUrl.searchParams.get("directory") || state.warm.latestDirectory
 
@@ -917,7 +1125,7 @@ function maybeServeCached(req, res, state, reqUrl) {
     }
     state.stats.cacheHit += 1
     if (!fresh(hit.at, snapshotCacheMs)) refresh(state)
-    raw(res, 200, hit.body, hit.type, { "X-OC-Cache": "hit" })
+    raw(res, hit.status || 200, hit.body, hit.type, { "X-OC-Cache": "hit" })
     return true
   }
 
@@ -932,7 +1140,7 @@ function maybeServeCached(req, res, state, reqUrl) {
     }
     state.stats.cacheHit += 1
     if (!fresh(hit.at, snapshotCacheMs)) refresh(state)
-    raw(res, 200, hit.body, hit.type, { "X-OC-Cache": "hit" })
+    raw(res, hit.status || 200, hit.body, hit.type, { "X-OC-Cache": "hit" })
     return true
   }
 
@@ -946,7 +1154,7 @@ function maybeServeCached(req, res, state, reqUrl) {
     }
     state.stats.cacheHit += 1
     if (!fresh(hit.at, snapshotCacheMs)) refresh(state)
-    raw(res, 200, hit.body, hit.type, { "X-OC-Cache": "hit" })
+    raw(res, hit.status || 200, hit.body, hit.type, { "X-OC-Cache": "hit" })
     return true
   }
 
@@ -955,6 +1163,7 @@ function maybeServeCached(req, res, state, reqUrl) {
 
 function proxyRequest(req, res, target, reqUrl, state) {
   const heavy = req.method === "GET" && /^\/session(\/|$)/.test(reqUrl.pathname)
+  const guardHtml = req.method === "GET" && isSessionHtmlPath(reqUrl.pathname)
   const runRequest = () => {
     const options = {
       hostname: target.host,
@@ -969,10 +1178,15 @@ function proxyRequest(req, res, target, reqUrl, state) {
       },
       agent: upstreamAgent,
     }
+    let finished = false
     delete options.headers.cookie
     delete options.headers["content-length"]
     const upstream = http.request(options, (up) => {
+      if (finished) return
+      finished = true
       const headers = { ...up.headers }
+      delete headers["content-security-policy"]
+      delete headers["content-security-policy-report-only"]
       const location = rewriteLocation(headers.location, { headersHost: req.headers.host }, target)
       if (location) headers.location = location
       else delete headers.location
@@ -993,39 +1207,58 @@ function proxyRequest(req, res, target, reqUrl, state) {
       const chunks = []
       up.on("data", (chunk) => chunks.push(chunk))
       up.on("end", () => {
+        const status = up.statusCode || 502
         const body = Buffer.concat(chunks).toString("utf8")
-        if (msg) {
+        const ok = status >= 200 && status < 300
+        if (ok && msg) {
           const sessionID = decodeURIComponent(msg[1])
           state.messages.set(cacheKey(dir, sessionID, limit), {
             body,
             type: String(headers["content-type"] || "application/json"),
+            status,
             at: now(),
             sessionID,
             directory: dir,
             limit,
           })
         }
-        if (reqUrl.pathname === "/session" && reqUrl.searchParams.get("roots") === "true") {
+        if (ok && reqUrl.pathname === "/session" && reqUrl.searchParams.get("roots") === "true") {
           state.lists.set(`${dir}\n${Number(reqUrl.searchParams.get("limit") || "55")}`, {
             body,
             type: String(headers["content-type"] || "application/json"),
+            status,
             at: now(),
           })
         }
         const detail = reqUrl.pathname.match(/^\/session\/([^/]+)$/)
-        if (detail && dir) {
+        if (ok && detail && dir) {
           state.details.set(`${dir}\n${decodeURIComponent(detail[1])}`, {
             body,
             type: String(headers["content-type"] || "application/json"),
+            status,
             at: now(),
           })
         }
-        res.writeHead(up.statusCode || 502, headers)
+        res.writeHead(status, headers)
         res.end(body)
       })
     })
+    if (guardHtml) {
+      upstream.setTimeout(htmlProxyTimeoutMs, () => {
+        if (finished) return
+        finished = true
+        upstream.destroy(new Error(`Session HTML timed out after ${htmlProxyTimeoutMs}ms`))
+        raw(res, 504, sessionTimeoutPage(target, reqUrl), "text/html")
+      })
+    }
     upstream.on("error", (err) => {
+      if (finished) return
+      finished = true
       if (res.headersSent || res.writableEnded || res.destroyed) return
+      if (guardHtml && /timed out/i.test(classifyError(err, ""))) {
+        raw(res, 504, sessionTimeoutPage(target, reqUrl), "text/html")
+        return
+      }
       json(res, 502, { error: err.message })
     })
     req.on("data", (chunk) => upstream.write(chunk))
@@ -1143,8 +1376,13 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (reqUrl.pathname === "/__oc/launch") {
-    void warm(state, false, { snapshotCount }).catch(() => {})
+    const payload = await resolveLaunch(state, snapshotCount)
     if (wantCookie) setTargetCookie(res, target)
+    if (payload.launchReady && payload.launch) {
+      res.writeHead(302, { Location: buildSessionLocation(target, payload.launch), "Cache-Control": "no-store" })
+      res.end()
+      return
+    }
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" })
     res.end(launchPage(target))
     return

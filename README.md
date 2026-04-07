@@ -97,7 +97,7 @@ See `launcher/oc-launcher.ini.example` for the template.
 
 The router is designed to sit behind `nginx` and a public hostname.
 
-In `v0.0.7`, the router upgrades into an asynchronous cache layer: launch only waits for the minimum session metadata needed to open OpenCode, while the VPS quietly builds and refreshes session snapshots in the background without blocking foreground usage. The router now also exposes a small health summary for operations.
+In `v0.0.8`, the router keeps the asynchronous cache layer from `v0.0.7` but hardens the real entry path around it: launch can now fall back to a server-side redirect into the latest known session, cache state no longer gets stuck in a false busy state, and the example nginx config now hides upstream CSP headers that were breaking session loads in the public proxy path.
 
 Core routes:
 
@@ -148,7 +148,7 @@ This project is released under the MIT License. See `LICENSE`.
 
 Current version:
 
-- `v0.0.7`
+- `v0.0.8`
 
 Release notes:
 
@@ -160,3 +160,4 @@ Release notes:
 - `docs/RELEASE-v0.0.5.md`: mobile stability pass with upstream keep-alive, heavy-request throttling, and gzip transport tuning
 - `docs/RELEASE-v0.0.6.md`: launch-state hotfix so stale cache can open immediately during background refresh
 - `docs/RELEASE-v0.0.7.md`: asynchronous background caching with non-blocking launch and router health summary
+- `docs/RELEASE-v0.0.8.md`: launch/session access hardening with server-side redirect fallback, cache-state recovery, and proxy CSP cleanup
