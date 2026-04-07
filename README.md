@@ -97,7 +97,7 @@ See `launcher/oc-launcher.ini.example` for the template.
 
 The router is designed to sit behind `nginx` and a public hostname.
 
-In `v0.0.5`, the VPS router keeps warm-cache launch behavior from `v0.0.4` and adds transport tuning for weak mobile links: upstream keep-alive, per-target heavy-request queuing, smaller mobile warmups, and nginx compression for the large JSON payloads that dominate session load time.
+In `v0.0.6`, the router keeps the `v0.0.5` transport tuning and fixes the remaining launch deadlock: stale-but-usable cache now opens the session immediately while the VPS refresh continues in the background, so `Reading remote session index...` no longer blocks cold launches that already have a valid latest session snapshot.
 
 Core routes:
 
@@ -147,7 +147,7 @@ This project is released under the MIT License. See `LICENSE`.
 
 Current version:
 
-- `v0.0.5`
+- `v0.0.6`
 
 Release notes:
 
@@ -157,3 +157,4 @@ Release notes:
 - `docs/RELEASE-v0.0.3.md`: router protocol reset with launch-time state seeding and sandbox-verified recovery
 - `docs/RELEASE-v0.0.4.md`: VPS cache warmup with staged launch progress and cached session snapshots
 - `docs/RELEASE-v0.0.5.md`: mobile stability pass with upstream keep-alive, heavy-request throttling, and gzip transport tuning
+- `docs/RELEASE-v0.0.6.md`: launch-state hotfix so stale cache can open immediately during background refresh

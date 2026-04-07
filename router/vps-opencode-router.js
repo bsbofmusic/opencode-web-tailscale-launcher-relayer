@@ -476,17 +476,21 @@ function refresh(state) {
   if (state.promise) return
   if (!state.meta) return
   if (fresh(state.metaAt, metaCacheMs)) return
-  void warm(state, true).catch(() => {})
+  void warm(state, true, { snapshotCount: state.warm.snapshotCount || desktopWarmSessionCount }).catch(() => {})
 }
 
 function progressPayload(state) {
+  const launchReady = Boolean(state.meta?.ready && state.meta?.sessions?.latest?.id && state.meta?.sessions?.latest?.directory)
   const payload = {
     target: state.target,
     ready: state.warm.ready && Boolean(state.meta?.ready),
+    launchReady,
+    refreshing: Boolean(state.warm.active),
+    cacheState: !state.meta ? "cold" : state.warm.active ? "stale" : "warm",
     warm: state.warm,
     meta: state.meta || null,
   }
-  if (payload.ready && state.meta?.sessions?.latest) {
+  if (launchReady && state.meta?.sessions?.latest) {
     payload.launch = {
       directory: encodeDir(state.meta.sessions.latest.directory),
       sessionID: state.meta.sessions.latest.id,
@@ -588,7 +592,7 @@ function launchPage(target) {
       stage.textContent = label(data.warm && data.warm.stage)
       note.textContent = data.warm && data.warm.note ? data.warm.note : 'Preparing...'
       if (!res.ok) throw new Error(data.error || ('Request failed: ' + res.status))
-      if (!data.ready || !data.meta || !data.launch) return false
+      if (!data.launchReady || !data.meta || !data.launch) return false
       seed(data.meta)
       const next = '/' + data.launch.directory + '/session/' + encodeURIComponent(data.launch.sessionID)
         + '?host=' + encodeURIComponent(target.host)
@@ -977,7 +981,7 @@ const server = http.createServer(async (req, res) => {
 
   if (reqUrl.pathname === "/__oc/meta") {
     try {
-      const meta = state.meta && fresh(state.metaAt, metaCacheMs) && state.warm.snapshotCount >= snapshotCount ? state.meta : await warm(state, false, { snapshotCount })
+      const meta = state.meta && state.meta.ready && state.warm.snapshotCount >= snapshotCount ? state.meta : await warm(state, false, { snapshotCount })
       refresh(state)
       json(res, 200, meta, wantCookie ? { "Set-Cookie": `${targetCookie}=${target.host}:${target.port}; Path=/; Max-Age=2592000; SameSite=Lax` } : undefined)
     } catch (err) {
