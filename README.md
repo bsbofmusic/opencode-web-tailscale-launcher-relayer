@@ -97,13 +97,14 @@ See `launcher/oc-launcher.ini.example` for the template.
 
 The router is designed to sit behind `nginx` and a public hostname.
 
-In `v0.0.6`, the router keeps the `v0.0.5` transport tuning and fixes the remaining launch deadlock: stale-but-usable cache now opens the session immediately while the VPS refresh continues in the background, so `Reading remote session index...` no longer blocks cold launches that already have a valid latest session snapshot.
+In `v0.0.7`, the router upgrades into an asynchronous cache layer: launch only waits for the minimum session metadata needed to open OpenCode, while the VPS quietly builds and refreshes session snapshots in the background without blocking foreground usage. The router now also exposes a small health summary for operations.
 
 Core routes:
 
 - `GET /`: landing page for entering `host:port`
 - `GET /__oc/meta`: remote health and session inspection
 - `GET /__oc/launch`: pre-seed browser state then redirect to the exact remote session
+- `GET /__oc/healthz`: lightweight router/cache health summary
 - all other paths: proxied through to the remote OpenCode web server
 
 This is what fixes the common first-load problem where a fresh browser or mobile device does not show historical sessions.
@@ -147,7 +148,7 @@ This project is released under the MIT License. See `LICENSE`.
 
 Current version:
 
-- `v0.0.6`
+- `v0.0.7`
 
 Release notes:
 
@@ -158,3 +159,4 @@ Release notes:
 - `docs/RELEASE-v0.0.4.md`: VPS cache warmup with staged launch progress and cached session snapshots
 - `docs/RELEASE-v0.0.5.md`: mobile stability pass with upstream keep-alive, heavy-request throttling, and gzip transport tuning
 - `docs/RELEASE-v0.0.6.md`: launch-state hotfix so stale cache can open immediately during background refresh
+- `docs/RELEASE-v0.0.7.md`: asynchronous background caching with non-blocking launch and router health summary
