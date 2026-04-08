@@ -20,6 +20,10 @@ const cleanupIntervalMs = 5 * 60 * 1000
 const launchRedirectWaitMs = 1200
 const slowHealthLatencyMs = Number(process.env.OPENCODE_ROUTER_SLOW_HEALTH_MS || "1500")
 const maxBackgroundHeavyRequestsPerTarget = Math.max(1, maxHeavyRequestsPerTarget - 1)
+const idleRecoveryThresholdMs = Number(process.env.OPENCODE_ROUTER_IDLE_RECOVERY_THRESHOLD_MS || "300000")
+const idleRecoveryWindowMs = Number(process.env.OPENCODE_ROUTER_IDLE_RECOVERY_WINDOW_MS || "30000")
+const recoveryRetryMs = Number(process.env.OPENCODE_ROUTER_RECOVERY_RETRY_MS || "1500")
+const recoveryHtmlTimeoutMs = Number(process.env.OPENCODE_ROUTER_RECOVERY_HTML_TIMEOUT_MS || "15000")
 
 const upstreamAgent = new http.Agent({
   keepAlive: true,
@@ -296,6 +300,8 @@ function createState(target) {
     backgroundActive: 0,
     backgroundQueue: [],
     backgroundKeys: new Set(),
+    ptyActive: 0,
+    resumeTimer: undefined,
     stats: {
       cacheHit: 0,
       cacheMiss: 0,
@@ -330,18 +336,61 @@ function createClientState(id) {
     lastError: null,
     lastAccessAt: now(),
     activeSessionID: undefined,
+    resumeSafeUntil: 0,
+    resumeReason: null,
   }
 }
 
-function touchClient(client) {
-  client.lastAccessAt = now()
+function clientSafeMode(client) {
+  return Boolean(client.resumeSafeUntil && client.resumeSafeUntil > now())
+}
+
+function clientSafeDelay(client) {
+  return clientSafeMode(client) ? recoveryRetryMs : 450
+}
+
+function backgroundWarmPaused(state) {
+  if (state.ptyActive > 0) return true
+  for (const client of state.clients.values()) {
+    if (clientSafeMode(client)) return true
+  }
+  return false
+}
+
+function scheduleBackgroundResume(state) {
+  if (state.resumeTimer) clearTimeout(state.resumeTimer)
+  const delay = Math.max(0, ...[...state.clients.values()].map((client) => Math.max(0, (client.resumeSafeUntil || 0) - now())))
+  if (!delay) {
+    state.resumeTimer = undefined
+    drainHeavy(state)
+    pumpBackground(state)
+    return
+  }
+  state.resumeTimer = setTimeout(() => {
+    state.resumeTimer = undefined
+    drainHeavy(state)
+    pumpBackground(state)
+  }, delay)
+  state.resumeTimer.unref?.()
+}
+
+function enterResumeSafe(state, client, reason) {
+  client.resumeSafeUntil = Math.max(client.resumeSafeUntil || 0, now() + idleRecoveryWindowMs)
+  client.resumeReason = reason
+  scheduleBackgroundResume(state)
+}
+
+function touchClient(state, client) {
+  const stamp = now()
+  if (client.lastAccessAt && stamp - client.lastAccessAt >= idleRecoveryThresholdMs) enterResumeSafe(state, client, "idle-resume")
+  client.lastAccessAt = stamp
 }
 
 function ensureClientState(state, id) {
   const key = validClient(id) ? id : sharedClientID
   const hit = state.clients.get(key)
   if (hit) {
-    touchClient(hit)
+    touchClient(state, hit)
     return hit
   }
   const next = createClientState(key)
@@ -439,12 +488,13 @@ function cleanupStates(force) {
       if (client.lastAccessAt < threshold && !client.warm.active) state.clients.delete(id)
     }
     if (!force && state.lastAccessAt >= threshold) continue
-    if (state.promise || state.heavyActive || state.backgroundActive) continue
+    if (state.promise || state.heavyActive || state.backgroundActive || state.ptyActive || state.resumeTimer) continue
+    if (state.resumeTimer) clearTimeout(state.resumeTimer)
     states.delete(key)
   }
   if (!force || states.size <= maxTargets) return
   const victims = [...states.entries()]
-    .filter(([, state]) => !state.promise && !state.heavyActive && !state.backgroundActive)
+    .filter(([, state]) => !state.promise && !state.heavyActive && !state.backgroundActive && !state.ptyActive && !state.resumeTimer)
     .sort((a, b) => a[1].lastAccessAt - b[1].lastAccessAt)
   while (states.size > maxTargets && victims.length) {
     states.delete(victims.shift()[0])
@@ -453,6 +503,7 @@ function cleanupStates(force) {
 
 function canRunHeavy(state, priority) {
   if (state.heavyActive >= maxHeavyRequestsPerTarget) return false
+  if (priority === "background" && backgroundWarmPaused(state)) return false
   if (priority === "background" && state.heavyBackgroundActive >= maxBackgroundHeavyRequestsPerTarget) return false
   return true
 }
@@ -495,6 +546,10 @@ function runHeavy(state, work, priority) {
 
 function pumpBackground(state) {
   if (state.heavyActive || state.backgroundActive) return
+  if (backgroundWarmPaused(state)) {
+    scheduleBackgroundResume(state)
+    return
+  }
   const next = state.backgroundQueue.shift()
   if (!next) return
   state.backgroundActive += 1
@@ -808,6 +863,9 @@ function progressPayload(state, client) {
     ready: client.warm.ready && Boolean(state.meta?.ready),
     launchReady,
     refreshing,
+    resumeSafeMode: clientSafeMode(client),
+    backgroundWarmPaused: backgroundWarmPaused(state),
+    retryAfterMs: clientSafeDelay(client),
     cacheState: !state.meta ? "cold" : refreshing ? "stale" : "warm",
     warm: client.warm,
     meta: state.meta || null,
@@ -841,6 +899,9 @@ function healthPayload() {
       backgroundActive: state.backgroundActive,
       backgroundQueued: state.backgroundQueue.length,
       backgroundKeys: state.backgroundKeys.size,
+      backgroundWarmPaused: backgroundWarmPaused(state),
+      resumeSafeClients: [...state.clients.values()].filter((client) => clientSafeMode(client)).length,
+      ptyActive: state.ptyActive,
       clients: state.clients.size,
       warmStage: state.promise ? "connect" : "ready",
       stats: state.stats,
@@ -854,7 +915,7 @@ function healthPayload() {
   }
 }
 
-function sessionTimeoutPage(target, reqUrl) {
+function sessionTimeoutPage(target, reqUrl, timeoutMs) {
   const sessionPath = escapeHtml(reqUrl.pathname)
   const host = escapeHtml(target.host)
   const port = escapeHtml(target.port)
@@ -883,7 +944,7 @@ function sessionTimeoutPage(target, reqUrl) {
 <body>
   <main>
     <h1>OpenCode session page is taking too long</h1>
-    <p>The remote OpenCode HTML route did not return a page within ${htmlProxyTimeoutMs} ms. Cached session APIs may still be alive, but the application shell is not loading cleanly right now.</p>
+    <p>The remote OpenCode HTML route did not return a page within ${timeoutMs} ms. Cached session APIs may still be alive, but the application shell is not loading cleanly right now.</p>
     <p><code>${sessionPath}</code></p>
     <p>Target: <code>${host}:${port}</code></p>
     <div class="actions">
@@ -960,6 +1021,7 @@ function launchPage(target, clientID) {
     const fallback = document.getElementById('fallback')
     let polls = 0
     let cachedLaunch = null
+    let retryAfter = 450
     function read(key) { try { return JSON.parse(localStorage.getItem(key) || '{}') } catch { return {} } }
     function write(key, value) { localStorage.setItem(key, JSON.stringify(value)) }
     sessionStorage.setItem(clientKey, target.client)
@@ -1041,6 +1103,7 @@ function launchPage(target, clientID) {
       const res = result.res
       const data = result.data
       polls += 1
+      retryAfter = Math.max(450, Number(data.retryAfterMs || 450))
       fill.style.width = Math.max(4, data.warm && data.warm.percent ? data.warm.percent : 4) + '%'
       stage.textContent = label(data.warm && data.warm.stage)
       note.textContent = data.warm && data.warm.note ? data.warm.note : 'Preparing...'
@@ -1079,7 +1142,7 @@ function launchPage(target, clientID) {
             return
           }
         }
-        await new Promise((resolve) => setTimeout(resolve, 450))
+        await new Promise((resolve) => setTimeout(resolve, retryAfter))
       }
     }
     loop()
@@ -1256,7 +1319,7 @@ function maybeServeCached(req, res, state, client, reqUrl) {
   if (req.method !== "GET") return false
   syncWarm(state, client)
   touchState(state)
-  touchClient(client)
+  touchClient(state, client)
   const directory = reqUrl.searchParams.get("directory") || client.warm.latestDirectory
   const priority = relayPriority(reqUrl, client)
 
@@ -1309,6 +1372,7 @@ function proxyRequest(req, res, target, reqUrl, state, client) {
   const heavy = req.method === "GET" && isHeavyRequest(reqUrl)
   const priority = relayPriority(reqUrl, client)
   const guardHtml = req.method === "GET" && isSessionHtmlPath(reqUrl.pathname)
+  const htmlTimeoutMs = clientSafeMode(client) ? recoveryHtmlTimeoutMs : htmlProxyTimeoutMs
   const runRequest = () => {
     const options = {
       hostname: target.host,
@@ -1392,11 +1456,11 @@ function proxyRequest(req, res, target, reqUrl, state, client) {
       })
     })
     if (guardHtml) {
-      upstream.setTimeout(htmlProxyTimeoutMs, () => {
+      upstream.setTimeout(htmlTimeoutMs, () => {
         if (finished) return
         finished = true
-        upstream.destroy(new Error(`Session HTML timed out after ${htmlProxyTimeoutMs}ms`))
-        raw(res, 504, sessionTimeoutPage(target, reqUrl), "text/html")
+        upstream.destroy(new Error(`Session HTML timed out after ${htmlTimeoutMs}ms`))
+        raw(res, 504, sessionTimeoutPage(target, reqUrl, htmlTimeoutMs), "text/html")
       })
     }
     upstream.on("error", (err) => {
@@ -1404,7 +1468,7 @@ function proxyRequest(req, res, target, reqUrl, state, client) {
       finished = true
       if (res.headersSent || res.writableEnded || res.destroyed) return
       if (guardHtml && /timed out/i.test(classifyError(err, ""))) {
-        raw(res, 504, sessionTimeoutPage(target, reqUrl), "text/html")
+        raw(res, 504, sessionTimeoutPage(target, reqUrl, htmlTimeoutMs), "text/html")
         return
       }
       json(res, 502, { error: err.message })
@@ -1432,7 +1496,18 @@ function writeUpgradeResponse(socket, response) {
   socket.write(lines.join("\r\n"))
 }
 
-function proxyUpgrade(req, socket, head, target, reqUrl) {
+function proxyUpgrade(req, socket, head, target, reqUrl, state) {
+  const terminal = /^\/pty\/[^/]+\/connect$/.test(reqUrl.pathname)
+  if (terminal) state.ptyActive += 1
+  let closed = false
+  const cleanup = () => {
+    if (closed) return
+    closed = true
+    if (!terminal) return
+    state.ptyActive = Math.max(0, state.ptyActive - 1)
+    drainHeavy(state)
+    pumpBackground(state)
+  }
   const upstream = http.request({
     hostname: target.host,
     port: Number(target.port),
@@ -1441,15 +1516,35 @@ function proxyUpgrade(req, socket, head, target, reqUrl) {
     headers: { ...req.headers, host: `${target.host}:${target.port}`, connection: "upgrade" },
     agent: upstreamAgent,
   })
+  if (terminal) {
+    socket.on("close", () => {
+      cleanup()
+      if (!upstream.destroyed) upstream.destroy()
+    })
+    socket.on("error", () => {
+      cleanup()
+      if (!upstream.destroyed) upstream.destroy()
+    })
+  }
   upstream.on("upgrade", (upRes, upSocket, upHead) => {
     writeUpgradeResponse(socket, upRes)
     if (head && head.length) upSocket.write(head)
     if (upHead && upHead.length) socket.write(upHead)
+    upSocket.on("close", cleanup)
+    socket.on("close", cleanup)
+    upSocket.on("error", cleanup)
+    socket.on("error", cleanup)
     upSocket.pipe(socket)
     socket.pipe(upSocket)
   })
-  upstream.on("response", () => socket.destroy())
-  upstream.on("error", () => socket.destroy())
+  upstream.on("response", () => {
+    cleanup()
+    socket.destroy()
+  })
+  upstream.on("error", () => {
+    cleanup()
+    socket.destroy()
+  })
   upstream.end()
 }
 
@@ -1479,7 +1574,7 @@ const server = http.createServer(async (req, res) => {
   }
   const isLanding = !reqUrl.pathname || reqUrl.pathname === "/" || reqUrl.pathname === "/index.html" || reqUrl.pathname === "/__landing"
   if (isLanding) {
-    const target = getTarget(reqUrl, req.headers, { allowEmpty: true }) || { host: "", port: "3000" }
+    const target = getTarget(reqUrl, req.headers, { allowEmpty: true, useCookie: false }) || { host: "", port: "3000" }
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" })
     res.end(landing(target))
     return
@@ -1548,7 +1643,8 @@ server.on("upgrade", (req, socket, head) => {
     socket.destroy()
     return
   }
-  proxyUpgrade(req, socket, head, target, reqUrl)
+  const state = ensureState(target)
+  proxyUpgrade(req, socket, head, target, reqUrl, state)
 })
 
 setInterval(() => cleanupStates(false), cleanupIntervalMs).unref()
