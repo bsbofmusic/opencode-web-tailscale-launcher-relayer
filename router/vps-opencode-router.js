@@ -3,6 +3,7 @@ const http = require("http")
 const bindHost = process.env.OPENCODE_ROUTER_HOST || "127.0.0.1"
 const bindPort = Number(process.env.OPENCODE_ROUTER_PORT || "33102")
 const targetCookie = "oc_target"
+const sharedClientID = "_shared"
 const maxSessions = 80
 const maxProjects = 12
 const inspectTimeoutMs = Number(process.env.OPENCODE_ROUTER_INSPECT_TIMEOUT_MS || "5000")
@@ -17,6 +18,7 @@ const maxTargets = 8
 const targetIdleMs = 30 * 60 * 1000
 const cleanupIntervalMs = 5 * 60 * 1000
 const launchRedirectWaitMs = 1200
+const slowHealthLatencyMs = Number(process.env.OPENCODE_ROUTER_SLOW_HEALTH_MS || "1500")
 
 const upstreamAgent = new http.Agent({
   keepAlive: true,
@@ -65,6 +67,22 @@ function parseTarget(host, port) {
   const nextPort = String(port || "3000")
   if (!validPort(nextPort)) return
   return { host, port: nextPort }
+}
+
+function validClient(value) {
+  return /^[a-zA-Z0-9_-]{8,64}$/.test(String(value || ""))
+}
+
+function createClientID() {
+  return `c_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36).slice(-4)}`
+}
+
+function getClientID(reqUrl, options) {
+  const opts = options || {}
+  const value = reqUrl.searchParams.get("client") || ""
+  if (validClient(value)) return value
+  if (opts.allowGenerated) return createClientID()
+  return sharedClientID
 }
 
 function getTarget(reqUrl, headers, options) {
@@ -175,11 +193,19 @@ function encodeDir(value) {
 
 function buildSessionLocation(target, launch) {
   if (!launch?.directory || !launch?.sessionID) return null
-  return `/${launch.directory}/session/${encodeURIComponent(launch.sessionID)}?host=${encodeURIComponent(target.host)}&port=${encodeURIComponent(target.port)}`
+  const params = new URLSearchParams({ host: target.host, port: target.port })
+  if (launch.client && validClient(launch.client)) params.set("client", launch.client)
+  return `/${launch.directory}/session/${encodeURIComponent(launch.sessionID)}?${params.toString()}`
 }
 
 function isSessionHtmlPath(pathname) {
   return /^\/[^/]+\/session\/[^/]+$/.test(pathname)
+}
+
+function isHeavyRequest(reqUrl) {
+  if (reqUrl.pathname === "/session/status") return false
+  if (reqUrl.pathname === "/session") return true
+  return /^\/session\/[^/]+\/message$/.test(reqUrl.pathname)
 }
 
 function latest(items) {
@@ -231,25 +257,13 @@ function cacheKey(directory, sessionID, limit) {
 function createState(target) {
   return {
     target,
+    clients: new Map(),
     meta: undefined,
     metaAt: 0,
     sessionList: [],
     lists: new Map(),
     messages: new Map(),
     details: new Map(),
-    warm: {
-      active: false,
-      ready: false,
-      first: true,
-      percent: 0,
-      stage: "idle",
-      note: "Waiting",
-      cachedAt: 0,
-      latestSessionID: undefined,
-      latestDirectory: undefined,
-      snapshotCount: 0,
-      error: null,
-    },
     heavyActive: 0,
     heavyQueue: [],
     backgroundActive: 0,
@@ -270,6 +284,43 @@ function createState(target) {
   }
 }
 
+function createClientState(id) {
+  return {
+    id,
+    warm: {
+      active: false,
+      ready: false,
+      first: true,
+      percent: 0,
+      stage: "idle",
+      note: "Waiting",
+      cachedAt: 0,
+      latestSessionID: undefined,
+      latestDirectory: undefined,
+      snapshotCount: 0,
+      error: null,
+    },
+    lastError: null,
+    lastAccessAt: now(),
+  }
+}
+
+function touchClient(client) {
+  client.lastAccessAt = now()
+}
+
+function ensureClientState(state, id) {
+  const key = validClient(id) ? id : sharedClientID
+  const hit = state.clients.get(key)
+  if (hit) {
+    touchClient(hit)
+    return hit
+  }
+  const next = createClientState(key)
+  state.clients.set(key, next)
+  return next
+}
+
 function ensureState(target) {
   const key = keyFor(target)
   const hit = states.get(key)
@@ -283,8 +334,8 @@ function ensureState(target) {
   return next
 }
 
-function setWarm(state, patch) {
-  state.warm = { ...state.warm, ...patch }
+function setWarm(client, patch) {
+  client.warm = { ...client.warm, ...patch }
 }
 
 function warmBusy(state) {
@@ -299,38 +350,39 @@ function snapshotGoal(state, requested) {
   return Math.max(1, Math.min(requested, available))
 }
 
-function settleWarm(state, note) {
+function settleWarm(state, client, note) {
   if (warmBusy(state)) return
   const ready = Boolean(state.meta?.ready)
-  setWarm(state, {
+  setWarm(client, {
     active: false,
     ready,
     first: false,
-    percent: ready ? 100 : state.warm.percent,
-    stage: ready ? "ready" : state.warm.stage,
-    note: note || (ready ? "Background cache is ready." : state.warm.note),
-    cachedAt: ready ? now() : state.warm.cachedAt,
+    percent: ready ? 100 : client.warm.percent,
+    stage: ready ? "ready" : client.warm.stage,
+    note: note || (ready ? "Background cache is ready." : client.warm.note),
+    cachedAt: ready ? now() : client.warm.cachedAt,
   })
 }
 
-function failWarm(state, err, fallback) {
+function failWarm(state, client, err, fallback) {
   const message = classifyError(err, fallback)
   state.lastError = message
+  client.lastError = message
   if (state.meta?.ready) {
     state.stats.staleLaunch += 1
-    setWarm(state, {
+    setWarm(client, {
       active: false,
       ready: true,
       first: false,
       percent: 100,
       stage: "ready",
       note: "Using cached session metadata while refresh failed.",
-      cachedAt: state.warm.cachedAt || state.metaAt || now(),
+      cachedAt: client.warm.cachedAt || state.metaAt || now(),
       error: message,
     })
     return false
   }
-  setWarm(state, {
+  setWarm(client, {
     active: false,
     ready: false,
     percent: 100,
@@ -341,16 +393,23 @@ function failWarm(state, err, fallback) {
   return true
 }
 
-function syncWarm(state) {
-  if (!state.warm.active) return
+function syncWarm(state, client) {
+  if (!client.warm.active) return
   if (warmBusy(state)) return
-  settleWarm(state, state.warm.error && state.meta?.ready ? "Using cached session metadata while refresh failed." : undefined)
+  settleWarm(state, client, client.warm.error && state.meta?.ready ? "Using cached session metadata while refresh failed." : undefined)
+}
+
+function syncClients(state) {
+  for (const client of state.clients.values()) syncWarm(state, client)
 }
 
 function cleanupStates(force) {
   const entries = [...states.entries()]
   const threshold = now() - targetIdleMs
   for (const [key, state] of entries) {
+    for (const [id, client] of state.clients.entries()) {
+      if (client.lastAccessAt < threshold && !client.warm.active) state.clients.delete(id)
+    }
     if (!force && state.lastAccessAt >= threshold) continue
     if (state.promise || state.heavyActive || state.backgroundActive) continue
     states.delete(key)
@@ -406,7 +465,7 @@ function pumpBackground(state) {
     .finally(() => {
       state.backgroundActive -= 1
       state.backgroundKeys.delete(next.key)
-      if (!state.backgroundQueue.length) settleWarm(state)
+      if (!state.backgroundQueue.length) syncClients(state)
       pumpBackground(state)
     })
 }
@@ -493,7 +552,7 @@ async function cacheDetail(state, target, directory, sessionID) {
   })
 }
 
-function scheduleSnapshotWarm(state, target, latestSession, nearby) {
+function scheduleSnapshotWarm(state, client, target, latestSession, nearby) {
   if (!latestSession?.directory || !latestSession?.id) return
   const detailKey = `${latestSession.directory}\n${latestSession.id}`
   const needsDetail = !fresh(state.details.get(detailKey)?.at, snapshotCacheMs)
@@ -505,7 +564,7 @@ function scheduleSnapshotWarm(state, target, latestSession, nearby) {
     jobs.push({
       key: `detail\n${latestSession.directory}\n${latestSession.id}`,
       run: async () => {
-        setWarm(state, {
+        setWarm(client, {
           active: true,
           ready: true,
           percent: 60,
@@ -520,7 +579,7 @@ function scheduleSnapshotWarm(state, target, latestSession, nearby) {
     jobs.push({
       key: `message\n${item.directory}\n${item.id}\n${limit}`,
       run: async () => {
-        setWarm(state, {
+        setWarm(client, {
           active: true,
           ready: true,
           percent: 65 + Math.round(((index + 1) / Math.max(messageJobs.length, 1)) * 30),
@@ -533,7 +592,7 @@ function scheduleSnapshotWarm(state, target, latestSession, nearby) {
   })
   const pending = jobs.filter((job) => state.backgroundKeys.has(job.key)).length
   if (!jobs.length && !pending) {
-    setWarm(state, {
+    setWarm(client, {
       active: false,
       ready: true,
       percent: 100,
@@ -544,7 +603,7 @@ function scheduleSnapshotWarm(state, target, latestSession, nearby) {
     })
     return
   }
-  setWarm(state, {
+  setWarm(client, {
     active: true,
     ready: true,
     percent: 55,
@@ -559,7 +618,7 @@ function scheduleSnapshotWarm(state, target, latestSession, nearby) {
     if (enqueueBackground(state, job.key, job.run)) queued += 1
   })
   if (!queued && pending) {
-    setWarm(state, {
+    setWarm(client, {
       active: true,
       ready: true,
       percent: 55,
@@ -571,17 +630,27 @@ function scheduleSnapshotWarm(state, target, latestSession, nearby) {
     })
     return
   }
-  if (!queued) settleWarm(state)
+  if (!queued) settleWarm(state, client)
 }
 
-async function warm(state, force, options) {
+async function warm(state, client, force, options) {
   const opts = options || {}
   const requestedSnapshotCount = opts.snapshotCount || desktopWarmSessionCount
-  if (state.promise) return state.promise
-  if (!force && fresh(state.metaAt, metaCacheMs) && state.meta && state.warm.snapshotCount >= snapshotGoal(state, requestedSnapshotCount)) return Promise.resolve(state.meta)
+  if (state.promise) {
+    setWarm(client, {
+      active: true,
+      ready: Boolean(state.meta?.ready),
+      percent: client.warm.percent || 5,
+      stage: client.warm.stage === "idle" ? "connect" : client.warm.stage,
+      note: state.meta ? "Refreshing cached state..." : "First read may take longer while the VPS builds a cache.",
+      error: null,
+    })
+    return state.promise
+  }
+  if (!force && fresh(state.metaAt, metaCacheMs) && state.meta) return Promise.resolve(state.meta)
   const target = state.target
   const body = async () => {
-    setWarm(state, {
+    setWarm(client, {
       active: true,
       ready: false,
       percent: 5,
@@ -594,11 +663,11 @@ async function warm(state, force, options) {
     try {
       health = await fetchJson(target, "/global/health")
     } catch (err) {
-      if (failWarm(state, err, "Health check failed")) throw err
+      if (failWarm(state, client, err, "Health check failed")) throw err
       return state.meta
     }
 
-    setWarm(state, {
+    setWarm(client, {
       percent: 28,
       stage: "index",
       note: "Reading remote session index...",
@@ -608,7 +677,7 @@ async function warm(state, force, options) {
     try {
       sessions = await fetchJsonWith(target, `/session?limit=${maxSessions}`, { heavy: true, state })
     } catch (err) {
-      if (failWarm(state, err, "Session scan failed")) throw err
+      if (failWarm(state, client, err, "Session scan failed")) throw err
       return state.meta
     }
 
@@ -618,7 +687,7 @@ async function warm(state, force, options) {
     for (const dir of uniqueDirectories(state.sessionList)) rememberList(state, dir, 55)
 
     if (!state.meta.ready) {
-      setWarm(state, {
+      setWarm(client, {
         active: false,
         ready: false,
         percent: 100,
@@ -632,22 +701,27 @@ async function warm(state, force, options) {
     const latestSession = state.meta.sessions.latest
     const nearby = state.sessionList
       .filter((item) => item?.directory === latestSession.directory)
-      .slice(0, requestedSnapshotCount)
+      .slice(0, health.latencyMs >= slowHealthLatencyMs ? 0 : requestedSnapshotCount)
 
-    setWarm(state, {
+    setWarm(client, {
       active: false,
       ready: true,
       first: false,
       percent: 100,
       stage: "ready",
-      note: state.warm.first ? "Cache index is ready. Opening the latest session..." : "Latest session is ready. Opening now...",
+      note:
+        health.latencyMs >= slowHealthLatencyMs
+          ? "Upstream is slow. Opening now and reducing background cache work..."
+          : client.warm.first
+            ? "Cache index is ready. Opening the latest session..."
+            : "Latest session is ready. Opening now...",
       cachedAt: now(),
       latestSessionID: latestSession.id,
       latestDirectory: latestSession.directory,
       error: null,
     })
 
-    scheduleSnapshotWarm(state, target, latestSession, nearby)
+    scheduleSnapshotWarm(state, client, target, latestSession, nearby)
 
     state.meta.cache = {
       source: "router",
@@ -662,13 +736,13 @@ async function warm(state, force, options) {
     new Promise((_, reject) => setTimeout(() => reject(new Error(`Warm timed out after ${warmTimeoutMs}ms`)), warmTimeoutMs)),
   ])
     .catch((err) => {
-      if (failWarm(state, err, "Warm refresh failed")) throw err
+      if (failWarm(state, client, err, "Warm refresh failed")) throw err
       return state.meta
     })
     .finally(() => {
       state.promise = undefined
       state.promiseStartedAt = 0
-      syncWarm(state)
+      syncClients(state)
     })
 
   state.promise = run
@@ -676,30 +750,32 @@ async function warm(state, force, options) {
   return run
 }
 
-function refresh(state) {
+function refresh(state, client) {
   if (state.promise) return
   if (!state.meta) return
   if (fresh(state.metaAt, metaCacheMs)) return
-  void warm(state, true, { snapshotCount: snapshotGoal(state, state.warm.snapshotCount || desktopWarmSessionCount) }).catch(() => {})
+  const launch = client || ensureClientState(state, sharedClientID)
+  void warm(state, launch, true, { snapshotCount: snapshotGoal(state, launch.warm.snapshotCount || desktopWarmSessionCount) }).catch(() => {})
 }
 
-function progressPayload(state) {
-  syncWarm(state)
+function progressPayload(state, client) {
+  syncWarm(state, client)
   const launchReady = Boolean(state.meta?.ready && state.meta?.sessions?.latest?.id && state.meta?.sessions?.latest?.directory)
-  const refreshing = warmBusy(state)
+  const refreshing = Boolean(client.warm.active && warmBusy(state))
   const payload = {
     target: state.target,
-    ready: state.warm.ready && Boolean(state.meta?.ready),
+    ready: client.warm.ready && Boolean(state.meta?.ready),
     launchReady,
     refreshing,
     cacheState: !state.meta ? "cold" : refreshing ? "stale" : "warm",
-    warm: state.warm,
+    warm: client.warm,
     meta: state.meta || null,
   }
   if (launchReady && state.meta?.sessions?.latest) {
     payload.launch = {
       directory: encodeDir(state.meta.sessions.latest.directory),
       sessionID: state.meta.sessions.latest.id,
+      client: client.id,
     }
   }
   return payload
@@ -707,13 +783,13 @@ function progressPayload(state) {
 
 function healthPayload() {
   const summary = [...states.values()].map((state) => {
-    syncWarm(state)
+    syncClients(state)
     return {
       target: state.target,
       launchReady: Boolean(state.meta?.ready && state.meta?.sessions?.latest?.id),
       refreshing: warmBusy(state),
-      snapshotCount: state.warm.snapshotCount,
-      cachedAt: state.warm.cachedAt || 0,
+      snapshotCount: Math.max(0, ...[...state.clients.values()].map((client) => client.warm.snapshotCount || 0)),
+      cachedAt: state.meta?.cache?.cachedAt || 0,
       lastAccessAt: state.lastAccessAt,
       promiseActive: Boolean(state.promise),
       promiseAgeMs: state.promiseStartedAt ? Math.max(0, now() - state.promiseStartedAt) : 0,
@@ -722,7 +798,8 @@ function healthPayload() {
       backgroundActive: state.backgroundActive,
       backgroundQueued: state.backgroundQueue.length,
       backgroundKeys: state.backgroundKeys.size,
-      warmStage: state.warm.stage,
+      clients: state.clients.size,
+      warmStage: state.promise ? "connect" : "ready",
       stats: state.stats,
       lastError: state.lastError,
     }
@@ -738,6 +815,9 @@ function sessionTimeoutPage(target, reqUrl) {
   const sessionPath = escapeHtml(reqUrl.pathname)
   const host = escapeHtml(target.host)
   const port = escapeHtml(target.port)
+  const client = reqUrl.searchParams.get("client")
+  const launchParams = new URLSearchParams({ host: target.host, port: target.port })
+  if (validClient(client)) launchParams.set("client", client)
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -765,28 +845,28 @@ function sessionTimeoutPage(target, reqUrl) {
     <p>Target: <code>${host}:${port}</code></p>
     <div class="actions">
       <a class="primary" href="${escapeHtml(reqUrl.pathname + reqUrl.search)}">Retry this session</a>
-      <a href="/__oc/launch?host=${encodeURIComponent(target.host)}&port=${encodeURIComponent(target.port)}">Retry via launch</a>
-      <a href="/?host=${encodeURIComponent(target.host)}&port=${encodeURIComponent(target.port)}">Back to router</a>
+      <a href="/__oc/launch?${launchParams.toString()}">Retry via launch</a>
+      <a href="/?${launchParams.toString()}">Back to router</a>
     </div>
   </main>
 </body>
 </html>`
 }
 
-async function resolveLaunch(state, snapshotCount) {
-  const current = progressPayload(state)
+async function resolveLaunch(state, client, snapshotCount) {
+  const current = progressPayload(state, client)
   if (current.launchReady && current.launch) return current
   try {
     await Promise.race([
-      warm(state, false, { snapshotCount }),
+      warm(state, client, false, { snapshotCount }),
       new Promise((resolve) => setTimeout(resolve, launchRedirectWaitMs)),
     ])
   } catch {}
-  return progressPayload(state)
+  return progressPayload(state, client)
 }
 
-function launchPage(target) {
-  const payload = JSON.stringify(target).replace(/</g, "\\u003c")
+function launchPage(target, clientID) {
+  const payload = JSON.stringify({ ...target, client: clientID }).replace(/</g, "\\u003c")
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -832,12 +912,14 @@ function launchPage(target) {
     const serverKey = 'opencode.global.dat:server'
     const defaultServerKey = 'opencode.settings.dat:defaultServerUrl'
     const snapshotKey = 'opencode.router.dat:snapshot'
+    const clientKey = 'opencode.router.dat:client'
     const origin = location.origin
     const fallback = document.getElementById('fallback')
     let polls = 0
     let cachedLaunch = null
     function read(key) { try { return JSON.parse(localStorage.getItem(key) || '{}') } catch { return {} } }
     function write(key, value) { localStorage.setItem(key, JSON.stringify(value)) }
+    sessionStorage.setItem(clientKey, target.client)
     function encodeDir(value) {
       return btoa(unescape(encodeURIComponent(String(value || '')))).split('+').join('-').split('/').join('_').replace(/=+$/g, '')
     }
@@ -856,6 +938,7 @@ function launchPage(target) {
       return '/' + launch.directory + '/session/' + encodeURIComponent(launch.sessionID)
         + '?host=' + encodeURIComponent(target.host)
         + '&port=' + encodeURIComponent(target.port)
+        + '&client=' + encodeURIComponent(target.client)
     }
     function reveal(launch) {
       if (!launch) return
@@ -910,6 +993,7 @@ function launchPage(target) {
     note.textContent = 'Reading the VPS launch state...'
     async function tick() {
       const url = '/__oc/progress?host=' + encodeURIComponent(target.host) + '&port=' + encodeURIComponent(target.port)
+        + '&client=' + encodeURIComponent(target.client)
       const result = await fetchJson(url, 4000)
       const res = result.res
       const data = result.data
@@ -925,7 +1009,7 @@ function launchPage(target) {
         return true
       }
       if (polls % 12 === 0) {
-        const metaResult = await fetchJson('/__oc/meta?host=' + encodeURIComponent(target.host) + '&port=' + encodeURIComponent(target.port), 4000)
+        const metaResult = await fetchJson('/__oc/meta?host=' + encodeURIComponent(target.host) + '&port=' + encodeURIComponent(target.port) + '&client=' + encodeURIComponent(target.client), 4000)
         const metaRes = metaResult.res
         const meta = metaResult.data
         if (metaRes.ok && meta && meta.ready && meta.sessions && meta.sessions.latest) {
@@ -966,6 +1050,8 @@ function rewriteLocation(value, reqUrl, target) {
   const next = new URL(value, `http://${reqUrl.headersHost || "localhost"}`)
   next.searchParams.set("host", target.host)
   next.searchParams.set("port", target.port)
+  const client = reqUrl.searchParams?.get?.("client")
+  if (validClient(client)) next.searchParams.set("client", client)
   return `${next.pathname}${next.search}${next.hash}`
 }
 
@@ -1021,6 +1107,7 @@ function landing(target) {
     const port = document.getElementById('port')
     const status = document.getElementById('status')
     const meta = document.getElementById('meta')
+    const clientKey = 'opencode.router.dat:client'
     function validIp(value) {
       const parts = value.split('.')
       if (parts.length !== 4) return false
@@ -1034,6 +1121,16 @@ function landing(target) {
     function cleanPort(value) {
       const chars = value.split('').filter(function (char) { return char >= '0' && char <= '9' }).join('')
       return chars || '3000'
+    }
+    function validClient(value) {
+      return /^[a-zA-Z0-9_-]{8,64}$/.test(String(value || ''))
+    }
+    function client() {
+      const hit = sessionStorage.getItem(clientKey)
+      if (validClient(hit)) return hit
+      const next = 'c_' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4)
+      sessionStorage.setItem(clientKey, next)
+      return next
     }
     function target() {
       const ip = host.value.trim()
@@ -1067,7 +1164,7 @@ function landing(target) {
     async function inspect() {
       const t = target()
       status.textContent = 'Reading the VPS cache and refreshing metadata...'
-      const url = '/__oc/meta?host=' + encodeURIComponent(t.host) + '&port=' + encodeURIComponent(t.port)
+      const url = '/__oc/meta?host=' + encodeURIComponent(t.host) + '&port=' + encodeURIComponent(t.port) + '&client=' + encodeURIComponent(client())
       const res = await fetch(url, { credentials: 'same-origin' })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || ('Request failed: ' + res.status))
@@ -1081,7 +1178,7 @@ function landing(target) {
       try {
         const t = target()
         status.textContent = 'Warming the VPS cache and preparing the latest session...'
-        location.href = '/__oc/launch?host=' + encodeURIComponent(t.host) + '&port=' + encodeURIComponent(t.port)
+        location.href = '/__oc/launch?host=' + encodeURIComponent(t.host) + '&port=' + encodeURIComponent(t.port) + '&client=' + encodeURIComponent(client())
       } catch (error) {
         status.textContent = error.message || String(error)
       }
@@ -1093,6 +1190,7 @@ function landing(target) {
       port.value = '3000'
       status.textContent = ''
       meta.textContent = 'Enter a target and click Check.'
+      sessionStorage.removeItem(clientKey)
       fetch('/__oc/clear', { method: 'POST', credentials: 'same-origin' }).catch(function () {})
       host.focus()
     })
@@ -1106,15 +1204,17 @@ function cleanSearch(input) {
   const next = new URLSearchParams(input)
   next.delete("host")
   next.delete("port")
+  next.delete("client")
   const text = next.toString()
   return text ? `?${text}` : ""
 }
 
-function maybeServeCached(req, res, state, reqUrl) {
+function maybeServeCached(req, res, state, client, reqUrl) {
   if (req.method !== "GET") return false
-  syncWarm(state)
+  syncWarm(state, client)
   touchState(state)
-  const directory = reqUrl.searchParams.get("directory") || state.warm.latestDirectory
+  touchClient(client)
+  const directory = reqUrl.searchParams.get("directory") || client.warm.latestDirectory
 
   if (reqUrl.pathname === "/session" && reqUrl.searchParams.get("roots") === "true" && directory) {
     const limit = Number(reqUrl.searchParams.get("limit") || "55")
@@ -1124,7 +1224,7 @@ function maybeServeCached(req, res, state, reqUrl) {
       return false
     }
     state.stats.cacheHit += 1
-    if (!fresh(hit.at, snapshotCacheMs)) refresh(state)
+    if (!fresh(hit.at, snapshotCacheMs)) refresh(state, client)
     raw(res, hit.status || 200, hit.body, hit.type, { "X-OC-Cache": "hit" })
     return true
   }
@@ -1139,7 +1239,7 @@ function maybeServeCached(req, res, state, reqUrl) {
       return false
     }
     state.stats.cacheHit += 1
-    if (!fresh(hit.at, snapshotCacheMs)) refresh(state)
+    if (!fresh(hit.at, snapshotCacheMs)) refresh(state, client)
     raw(res, hit.status || 200, hit.body, hit.type, { "X-OC-Cache": "hit" })
     return true
   }
@@ -1153,7 +1253,7 @@ function maybeServeCached(req, res, state, reqUrl) {
       return false
     }
     state.stats.cacheHit += 1
-    if (!fresh(hit.at, snapshotCacheMs)) refresh(state)
+    if (!fresh(hit.at, snapshotCacheMs)) refresh(state, client)
     raw(res, hit.status || 200, hit.body, hit.type, { "X-OC-Cache": "hit" })
     return true
   }
@@ -1162,7 +1262,7 @@ function maybeServeCached(req, res, state, reqUrl) {
 }
 
 function proxyRequest(req, res, target, reqUrl, state) {
-  const heavy = req.method === "GET" && /^\/session(\/|$)/.test(reqUrl.pathname)
+  const heavy = req.method === "GET" && isHeavyRequest(reqUrl)
   const guardHtml = req.method === "GET" && isSessionHtmlPath(reqUrl.pathname)
   const runRequest = () => {
     const options = {
@@ -1331,7 +1431,7 @@ const server = http.createServer(async (req, res) => {
   }
   const isLanding = !reqUrl.pathname || reqUrl.pathname === "/" || reqUrl.pathname === "/index.html" || reqUrl.pathname === "/__landing"
   if (isLanding) {
-    const target = getTarget(reqUrl, req.headers, { allowEmpty: true, useCookie: false }) || { host: "", port: "3000" }
+    const target = getTarget(reqUrl, req.headers, { allowEmpty: true }) || { host: "", port: "3000" }
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" })
     res.end(landing(target))
     return
@@ -1351,13 +1451,13 @@ const server = http.createServer(async (req, res) => {
     return
   }
   const state = ensureState(target)
+  const client = ensureClientState(state, getClientID(reqUrl, { allowGenerated: reqUrl.pathname === "/__oc/launch" }))
   const snapshotCount = isMobile(req.headers) ? mobileWarmSessionCount : desktopWarmSessionCount
   const wantCookie = reqUrl.searchParams.has("host") || reqUrl.searchParams.has("port")
 
   if (reqUrl.pathname === "/__oc/progress") {
     try {
-      void warm(state, false, { snapshotCount }).catch(() => {})
-      json(res, 200, progressPayload(state), wantCookie ? { "Set-Cookie": `${targetCookie}=${target.host}:${target.port}; Path=/; Max-Age=2592000; SameSite=Lax` } : undefined)
+      json(res, 200, progressPayload(state, client), wantCookie ? { "Set-Cookie": `${targetCookie}=${target.host}:${target.port}; Path=/; Max-Age=2592000; SameSite=Lax` } : undefined)
     } catch (err) {
       json(res, 502, { error: classifyError(err, "Warm failed") })
     }
@@ -1366,8 +1466,8 @@ const server = http.createServer(async (req, res) => {
 
   if (reqUrl.pathname === "/__oc/meta") {
     try {
-      const meta = state.meta && state.meta.ready && state.warm.snapshotCount >= snapshotCount ? state.meta : await warm(state, false, { snapshotCount })
-      refresh(state)
+      const meta = state.meta && state.meta.ready ? state.meta : await warm(state, client, false, { snapshotCount })
+      refresh(state, client)
       json(res, 200, meta, wantCookie ? { "Set-Cookie": `${targetCookie}=${target.host}:${target.port}; Path=/; Max-Age=2592000; SameSite=Lax` } : undefined)
     } catch (err) {
       json(res, 502, { error: classifyError(err, "Target inspection failed") })
@@ -1376,7 +1476,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (reqUrl.pathname === "/__oc/launch") {
-    const payload = await resolveLaunch(state, snapshotCount)
+    const payload = await resolveLaunch(state, client, snapshotCount)
     if (wantCookie) setTargetCookie(res, target)
     if (payload.launchReady && payload.launch) {
       res.writeHead(302, { Location: buildSessionLocation(target, payload.launch), "Cache-Control": "no-store" })
@@ -1384,12 +1484,12 @@ const server = http.createServer(async (req, res) => {
       return
     }
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" })
-    res.end(launchPage(target))
+    res.end(launchPage(target, client.id))
     return
   }
 
   if (wantCookie) setTargetCookie(res, target)
-  if (maybeServeCached(req, res, state, reqUrl)) return
+  if (maybeServeCached(req, res, state, client, reqUrl)) return
   proxyRequest(req, res, target, reqUrl, state)
 })
 

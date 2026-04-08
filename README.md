@@ -148,7 +148,7 @@ This project is released under the MIT License. See `LICENSE`.
 
 Current version:
 
-- `v0.0.8`
+- `v0.0.9`
 
 Release notes:
 
@@ -161,3 +161,4 @@ Release notes:
 - `docs/RELEASE-v0.0.6.md`: launch-state hotfix so stale cache can open immediately during background refresh
 - `docs/RELEASE-v0.0.7.md`: asynchronous background caching with non-blocking launch and router health summary
 - `docs/RELEASE-v0.0.8.md`: launch/session access hardening with server-side redirect fallback, cache-state recovery, and proxy CSP cleanup
+- `docs/RELEASE-v0.0.9.md`: relay-only hardening for landing memory, per-client launch isolation, and safer multi-terminal behavior
