@@ -10,6 +10,8 @@ The router does three jobs:
 2. Inspect the remote OpenCode instance over the tailnet.
 3. Seed browser-side project history before redirecting into the real session route.
 
+The public repo now ships the same modular router baseline as the local stable setup: disk cache recovery, background watcher refresh, SSE events, and offline-ready cache fallback all live under `router/` while the entry file path stays `router/vps-opencode-router.js`.
+
 ## Prerequisites
 
 - Linux VPS with `systemd`
@@ -21,14 +23,15 @@ The router does three jobs:
 
 ## Repo Files
 
-- Router app: `router/vps-opencode-router.js`
+- Router entry: `router/vps-opencode-router.js`
+- Router modules: `router/**/*.js`
 - `systemd` template: `deploy/systemd/opencode-router.service.example`
 - `nginx` template: `deploy/nginx/opencode-router.conf.example`
 
 ## Suggested Server Paths
 
 - App directory: `/opt/opencode-router`
-- Router script: `/opt/opencode-router/vps-opencode-router.js`
+- Router script: `/opt/opencode-router/router/vps-opencode-router.js`
 - `systemd` unit: `/etc/systemd/system/opencode-router.service`
 - `nginx` config: `/etc/nginx/conf.d/opencode-router.conf`
 
@@ -38,6 +41,8 @@ The router works with these environment variables:
 
 - `OPENCODE_ROUTER_HOST`: bind address, default `127.0.0.1`
 - `OPENCODE_ROUTER_PORT`: bind port, default `33102`
+- `OPENCODE_ROUTER_CACHE_DIR`: optional disk cache directory for offline recovery
+- `OPENCODE_ROUTER_WATCH_INTERVAL_MS`: optional watcher interval for background refresh and SSE updates
 
 The provided templates already use those defaults.
 
@@ -45,7 +50,7 @@ The provided templates already use those defaults.
 
 1. Install Node.js 18+ and `nginx` on the VPS.
 2. Create the router app directory.
-3. Copy `router/vps-opencode-router.js` into `/opt/opencode-router/`.
+3. Copy the whole `router/` directory into `/opt/opencode-router/router/`.
 4. Copy `deploy/systemd/opencode-router.service.example` to `/etc/systemd/system/opencode-router.service`.
 5. Copy `deploy/nginx/opencode-router.conf.example` to `/etc/nginx/conf.d/opencode-router.conf`.
 6. Replace every `your-domain.example.com` placeholder in the nginx file.
@@ -58,7 +63,8 @@ Run these from a checkout of this repo on the VPS:
 
 ```bash
 sudo mkdir -p /opt/opencode-router
-sudo cp router/vps-opencode-router.js /opt/opencode-router/
+sudo mkdir -p /opt/opencode-router/router
+sudo cp -R router/. /opt/opencode-router/router/
 sudo cp deploy/systemd/opencode-router.service.example /etc/systemd/system/opencode-router.service
 sudo cp deploy/nginx/opencode-router.conf.example /etc/nginx/conf.d/opencode-router.conf
 sudo systemctl daemon-reload
@@ -91,9 +97,10 @@ Expected result:
 ## Typical Flow
 
 1. Open `https://your-domain.example.com/`.
-2. Enter the Tailscale IPv4 and port for the Windows machine running the launcher.
-3. Click `Check` to confirm the target is healthy.
-4. Click `Open Remote OpenCode` to seed history and jump into the latest session.
+2. If you open the public router manually, enter the Tailscale IPv4 and port for the Windows machine running the launcher.
+3. If you open from the Windows launcher, it injects the current host and port into `router_url` automatically and examples default to `autogo=1`.
+4. Click `Check` to confirm the target is healthy.
+5. Click `Open Remote OpenCode` to seed history and jump into the latest session.
 
 ## Troubleshooting
 

@@ -16,6 +16,7 @@ The result is a mobile-friendly public entrypoint that does not need the OpenCod
 - Keeps `opencode web` healthy on the configured port
 - Router pre-seeds same-origin OpenCode history before redirecting
 - Transparent proxy after entering the real OpenCode page
+- Modular router runtime with disk-backed cache recovery, background watch refresh, SSE progress/events, and offline-ready fallback behavior
 
 ## Architecture
 
@@ -50,6 +51,7 @@ The result is a mobile-friendly public entrypoint that does not need the OpenCod
 3. It stays in the tray and does not open the browser by itself.
 4. On first run it generates `oc-launcher.ini` beside the exe.
 5. Double-click the tray icon if you want to open the router page manually.
+6. The launcher injects the current Tailscale `host` and configured `port` into `router_url` automatically, and keeps `autogo=1` unless you override it.
 
 ### Autostart
 
@@ -88,7 +90,7 @@ Important keys:
 - `cli_path`: path to `opencode.cmd` or another compatible binary
 - `port`: local OpenCode web port, default `3000`
 - `cors_origin`: public router origin that should be allowed by OpenCode web
-- `router_url`: page opened when you double-click the tray icon
+- `router_url`: page opened when you double-click the tray icon; the launcher appends the current `host` and `port` automatically and defaults examples to `autogo=1`
 - `poll_seconds`: health-check interval
 
 See `launcher/oc-launcher.ini.example` for the template.
@@ -97,13 +99,14 @@ See `launcher/oc-launcher.ini.example` for the template.
 
 The router is designed to sit behind `nginx` and a public hostname.
 
-In `v0.0.8`, the router keeps the asynchronous cache layer from `v0.0.7` but hardens the real entry path around it: launch can now fall back to a server-side redirect into the latest known session, cache state no longer gets stuck in a false busy state, and the example nginx config now hides upstream CSP headers that were breaking session loads in the public proxy path.
+The public router now uses the same modular final-experience baseline as the local stable build: disk cache recovery, background watcher refresh, SSE progress/events, launch-time state seeding, offline-ready cache fallback, and transparent proxy handoff all live under `router/` while the public entry file path stays `router/vps-opencode-router.js`.
 
 Core routes:
 
 - `GET /`: landing page for entering `host:port`
 - `GET /__oc/meta`: remote health and session inspection
 - `GET /__oc/launch`: pre-seed browser state then redirect to the exact remote session
+- `GET /__oc/events`: SSE stream for target health and cache/session changes
 - `GET /__oc/healthz`: lightweight router/cache health summary
 - all other paths: proxied through to the remote OpenCode web server
 
@@ -131,7 +134,7 @@ powershell -ExecutionPolicy Bypass -File .\launcher\build-oc-launcher.ps1
 That build produces:
 
 - `launcher\dist\OpenCodeTailnetLauncher.exe`
-- `launcher\dist\OpenCodeTailnetLauncher-v0.01-single.zip`
+- `launcher\dist\OpenCodeTailnetLauncher-v0.0.12-single.zip`
 
 ## Security
 
@@ -148,7 +151,7 @@ This project is released under the MIT License. See `LICENSE`.
 
 Current version:
 
-- `v0.0.11`
+- `v0.0.12`
 
 Release notes:
 
@@ -164,3 +167,4 @@ Release notes:
 - `docs/RELEASE-v0.0.9.md`: relay-only hardening for landing memory, per-client launch isolation, and safer multi-terminal behavior
 - `docs/RELEASE-v0.0.10.md`: relay-only history replay protection with background old-history deprioritization and improved priority observability
 - `docs/RELEASE-v0.0.11.md`: relay-only stabilization pass for fast-path launch, active-session freshness, idle/terminal protection, and response diagnostics
+- `docs/RELEASE-v0.0.12.md`: public sync to the modular final-experience baseline with launcher host/port injection and autogo defaults

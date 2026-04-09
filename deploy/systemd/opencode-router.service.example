@@ -6,7 +6,8 @@ After=network.target
 Type=simple
 User=www-data
 WorkingDirectory=/opt/opencode-router
-ExecStart=/usr/bin/node /opt/opencode-router/vps-opencode-router.js
+ExecStart=/usr/bin/node /opt/opencode-router/router/vps-opencode-router.js
+Environment=OPENCODE_ROUTER_CACHE_DIR=/opt/opencode-router/cache
 Restart=always
 RestartSec=2
 Environment=OPENCODE_ROUTER_HOST=127.0.0.1

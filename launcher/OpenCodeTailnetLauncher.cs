@@ -56,7 +56,7 @@ namespace OpenCodeTailnetLauncher
     internal sealed class TrayApp : ApplicationContext
     {
         private const string AppName = "OpenCode Tailnet Launcher";
-        private const string AppVersion = "v0.01";
+        private const string AppVersion = "v0.0.12";
         private readonly NotifyIcon tray;
         private readonly Timer timer;
         private readonly ToolStripMenuItem stateItem;
@@ -270,7 +270,46 @@ namespace OpenCodeTailnetLauncher
 
         private void OpenRouter()
         {
-            try { Process.Start(this.cfg.RouterUrl); } catch (Exception ex) { this.Log("open router failed: " + ex.Message); }
+            try { Process.Start(this.BuildRouterUrl()); } catch (Exception ex) { this.Log("open router failed: " + ex.Message); }
+        }
+
+        private string BuildRouterUrl()
+        {
+            var nextHost = string.IsNullOrWhiteSpace(this.host) ? FindTailIp() : this.host;
+            var raw = string.IsNullOrWhiteSpace(this.cfg.RouterUrl) ? "https://your-domain.example.com/?autogo=1" : this.cfg.RouterUrl.Trim();
+            if (string.IsNullOrWhiteSpace(nextHost)) return raw;
+            try
+            {
+                var builder = new UriBuilder(raw);
+                var query = ParseQuery(builder.Query);
+                query["host"] = nextHost;
+                query["port"] = this.cfg.Port.ToString();
+                if (!query.ContainsKey("autogo")) query["autogo"] = "1";
+                builder.Query = BuildQuery(query);
+                return builder.Uri.ToString();
+            }
+            catch { return raw; }
+        }
+
+        private static Dictionary<string, string> ParseQuery(string query)
+        {
+            var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var text = string.IsNullOrWhiteSpace(query) ? string.Empty : query.TrimStart('?');
+            if (text.Length == 0) return map;
+            foreach (var pair in text.Split('&'))
+            {
+                if (string.IsNullOrWhiteSpace(pair)) continue;
+                var i = pair.IndexOf('=');
+                var key = i >= 0 ? pair.Substring(0, i) : pair;
+                var value = i >= 0 ? pair.Substring(i + 1) : string.Empty;
+                map[Uri.UnescapeDataString(key)] = Uri.UnescapeDataString(value);
+            }
+            return map;
+        }
+
+        private static string BuildQuery(Dictionary<string, string> values)
+        {
+            return string.Join("&", values.Select(functionPair => Uri.EscapeDataString(functionPair.Key) + "=" + Uri.EscapeDataString(functionPair.Value ?? string.Empty)));
         }
 
         private void OpenLogs()
@@ -479,7 +518,7 @@ namespace OpenCodeTailnetLauncher
             cfg.CliPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "npm", "opencode.cmd");
             cfg.Port = 3000;
             cfg.CorsOrigin = "https://your-domain.example.com";
-            cfg.RouterUrl = "https://your-domain.example.com/?autogo=0";
+            cfg.RouterUrl = "https://your-domain.example.com/?autogo=1";
             cfg.PollSeconds = 5;
             cfg.AutoStart = false;
 
