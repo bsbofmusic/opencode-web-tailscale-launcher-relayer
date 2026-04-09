@@ -148,7 +148,7 @@ This project is released under the MIT License. See `LICENSE`.
 
 Current version:
 
-- `v0.0.10`
+- `v0.0.11`
 
 Release notes:
 
@@ -163,3 +163,4 @@ Release notes:
 - `docs/RELEASE-v0.0.8.md`: launch/session access hardening with server-side redirect fallback, cache-state recovery, and proxy CSP cleanup
 - `docs/RELEASE-v0.0.9.md`: relay-only hardening for landing memory, per-client launch isolation, and safer multi-terminal behavior
 - `docs/RELEASE-v0.0.10.md`: relay-only history replay protection with background old-history deprioritization and improved priority observability
+- `docs/RELEASE-v0.0.11.md`: relay-only stabilization pass for fast-path launch, active-session freshness, idle/terminal protection, and response diagnostics
