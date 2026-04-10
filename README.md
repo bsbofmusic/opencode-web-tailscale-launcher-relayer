@@ -147,7 +147,7 @@ powershell -ExecutionPolicy Bypass -File .\launcher\build-oc-launcher.ps1
 That build produces:
 
 - `launcher\dist\OpenCodeTailnetLauncher.exe`
-- `launcher\dist\OpenCodeTailnetLauncher-v0.1.1-single.zip`
+- `launcher\dist\OpenCodeTailnetLauncher-v0.1.2-single.zip`
 
 ## Security
 
@@ -164,7 +164,7 @@ This project is released under the MIT License. See `LICENSE`.
 
 Current version:
 
-- `v0.1.1`
+- `v0.1.2`
 
 Release notes:
 

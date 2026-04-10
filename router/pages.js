@@ -316,6 +316,26 @@ function launchPage(target, clientID, initial) {
         + '&client=' + encodeURIComponent(target.client)
         + '&handoff=1'
     }
+    function submitHandoff() {
+      const form = document.createElement('form')
+      form.method = 'GET'
+      form.action = '/__oc/launch'
+      form.style.display = 'none'
+      ;[
+        ['host', target.host],
+        ['port', target.port],
+        ['client', target.client],
+        ['handoff', '1'],
+      ].forEach(function (pair) {
+        const input = document.createElement('input')
+        input.type = 'hidden'
+        input.name = pair[0]
+        input.value = String(pair[1])
+        form.appendChild(input)
+      })
+      document.body.appendChild(form)
+      form.submit()
+    }
     function reveal(launch) {
       if (!launch) return
       cachedLaunch = launch
@@ -323,11 +343,11 @@ function launchPage(target, clientID, initial) {
     }
     function go(launch) {
       reveal(launch)
-      location.assign(handoffUrl())
+      submitHandoff()
     }
     fallback.addEventListener('click', function () {
       if (!cachedLaunch) return
-      location.assign(handoffUrl())
+      submitHandoff()
     })
     function serverKeys() {
       const keys = [origin]

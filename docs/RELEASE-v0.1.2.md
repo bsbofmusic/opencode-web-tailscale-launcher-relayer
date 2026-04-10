@@ -50,12 +50,12 @@ Validated with:
 
 Live browser gate evidence:
 
-- desktop: `ok=true`, `reason=session-route`, `durationMs=10691`
-- mobile: `ok=true`, `reason=session-route`, `durationMs=9474`
+- launcher-managed desktop: `ok=true`, `reason=session-route`, `durationMs=5297`
+- launcher-managed mobile: `ok=true`, `reason=session-route`, `durationMs=16269`
 
 Live relayer envelope evidence:
 
-- `/__oc/meta` on the live target reports `targetType=attach-only`
+- `/__oc/meta` on the live target reports `targetType=launcher-managed`
 - `/__oc/meta` on the live target reports `admission=enter`
 - `failureCount` and `backoffUntil` are now part of the target envelope
 

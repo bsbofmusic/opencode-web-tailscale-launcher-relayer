@@ -49,7 +49,7 @@ The router works with these environment variables:
 
 The provided templates already use those defaults.
 
-`v0.1.1` does not add a new external runtime file to deploy. The session sync runtime is injected inline into session HTML by the router itself.
+`v0.1.2` does not add a new external runtime file to deploy. The session sync runtime is injected inline into session HTML by the router itself.
 
 ## Deploy Steps
 
@@ -158,7 +158,7 @@ If you know a stable success marker on the session page, strengthen the gate fur
 $env:TAILNET_EXPECT_BODY_REGEX="OpenCode|Tailnet live"
 ```
 
-## 0.1.1 Sync Verify
+## 0.1.2 Sync Verify
 
 Check the session route headers:
 

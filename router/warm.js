@@ -405,7 +405,7 @@ async function warm(state, client, force, options, config) {
         note: state.meta.sessions.error || "No restoreable session found",
         cachedAt: state.metaAt,
       })
-      return state.meta
+      return metaEnvelope(state)
     }
     const latestSession = state.meta.sessions.latest
     const nearby = state.sessionList
