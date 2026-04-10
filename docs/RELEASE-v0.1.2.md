@@ -13,7 +13,7 @@
 
 `v0.1.2` explicitly targets official OpenCode web behavior and isolates compatibility handling inside the relayer rather than inside a forked app.
 
-The launcher-managed machine now relies on the official CLI path only, while the relayer keeps upstream inspection compatible with auth-enabled official builds.
+The launcher-managed machine now relies on the official CLI path only, while the relayer keeps upstream inspection and proxy paths aligned with official OpenCode web behavior.
 
 ### Target typing
 
@@ -60,6 +60,11 @@ Live relayer envelope evidence:
 - `/__oc/meta` on the live target reports `targetType=launcher-managed`
 - `/__oc/meta` on the live target reports `admission=enter`
 - `failureCount` and `backoffUntil` are now part of the target envelope
+
+Live truth-surface evidence:
+
+- `/__oc/progress` on the live target reports `targetType=launcher-managed`, `admission=enter`, `launchReady=true`, `failureCount=0`
+- `/__oc/healthz` on the live target reports `targetType=launcher-managed`, `admission=enter`, `launchReady=true`, `failureCount=0`
 
 ## Notes
 

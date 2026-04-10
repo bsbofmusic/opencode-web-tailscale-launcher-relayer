@@ -152,7 +152,7 @@ If Playwright is installed in a non-standard location, set:
 $env:PLAYWRIGHT_NODE_PATH="C:\path\to\node_modules\playwright"
 ```
 
-If you know a stable success marker on the session page, strengthen the gate further with:
+The gate now expects a positive success marker in the final page body by default (`Tailnet live`). Override only when debugging or adapting the gate to a different confirmed marker:
 
 ```powershell
 $env:TAILNET_EXPECT_BODY_REGEX="OpenCode|Tailnet live"
