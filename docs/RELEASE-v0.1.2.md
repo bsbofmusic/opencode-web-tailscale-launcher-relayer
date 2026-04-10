@@ -52,8 +52,8 @@ Live browser gate evidence:
 
 - attach-only desktop: `ok=true`, `reason=session-route`, `durationMs=8177`
 - attach-only mobile: `ok=true`, `reason=session-route`, `durationMs=14084`
-- launcher-managed desktop: `ok=true`, `reason=session-route`, `durationMs=5297`
-- launcher-managed mobile: `ok=true`, `reason=session-route`, `durationMs=16269`
+- launcher-managed desktop: `ok=true`, `reason=session-route`, `durationMs=11283`
+- launcher-managed mobile: `ok=true`, `reason=session-route`, `durationMs=18510`
 
 Live relayer envelope evidence:
 

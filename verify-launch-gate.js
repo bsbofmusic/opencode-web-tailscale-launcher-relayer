@@ -93,7 +93,7 @@ function looksLikeSuccess(state, network) {
   }
   const sessionOk = network.some((item) => /\/session\//.test(item.url) && item.status >= 200 && item.status < 300)
   if (!sessionOk) return false
-  const expectBody = env("TAILNET_EXPECT_BODY_REGEX", "")
+  const expectBody = env("TAILNET_EXPECT_BODY_REGEX", "Tailnet live")
   if (expectBody) {
     const re = new RegExp(expectBody, "i")
     if (!re.test(text)) return false

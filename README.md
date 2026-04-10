@@ -109,6 +109,7 @@ Core routes:
 
 - `GET /`: landing page for entering `host:port`
 - `GET /__oc/meta`: remote health and session inspection
+- `GET /__oc/progress`: launch-time and current-page truth for browser gating and status display
 - `GET /__oc/launch`: pre-seed browser state then redirect to the exact remote session
 - `GET /__oc/events`: SSE stream for target health and cache/session changes
 - `GET /__oc/healthz`: lightweight router/cache health summary
