@@ -50,8 +50,8 @@ Validated with:
 
 Live browser gate evidence:
 
-- launcher-managed desktop: `ok=true`, `reason=session-route`, `durationMs=5297`
-- launcher-managed mobile: `ok=true`, `reason=session-route`, `durationMs=16269`
+- launcher-managed desktop: `ok=true`, `reason=session-route`, `durationMs=13197`
+- launcher-managed mobile: `ok=true`, `reason=session-route`, `durationMs=5997`
 
 Live relayer envelope evidence:
 

@@ -394,6 +394,16 @@ function launchPage(target, clientID, initial) {
     }
     stage.textContent = 'Connecting to remote OpenCode...'
     note.textContent = 'Reading the VPS launch state...'
+    async function immediateLaunch(data) {
+      reveal(data.launch)
+      if (data.meta) seed(data.meta)
+      stage.textContent = 'Ready. Opening the session...'
+      note.textContent = data.resumeSafeMode ? 'Recovery-safe mode is on. The VPS will enter gently.' : 'The VPS has prepared the session. Entering now...'
+      const minVisible = 180
+      const delay = Math.max(0, minVisible - (Date.now() - shownAt))
+      if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay))
+      submitHandoff()
+    }
     async function tick() {
       let res, data
       if (!usedInitial && initial) {
@@ -437,6 +447,10 @@ function launchPage(target, clientID, initial) {
       return false
     }
     async function loop() {
+      if (initial && initial.launchReady && initial.launch) {
+        await immediateLaunch(initial)
+        return
+      }
       for (;;) {
         try {
           const done = await tick()
