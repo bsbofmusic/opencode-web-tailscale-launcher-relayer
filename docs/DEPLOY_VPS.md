@@ -132,7 +132,7 @@ node ./verify-launch-gate.js
 ```
 
 The command must exit `0` on both profiles before release.
-The gate now begins at the public landing page, verifies the visible entry controls, resolves the server-owned entry handoff, and proves that the pinned session route returns valid OpenCode HTML.
+The gate now begins at the public landing page, verifies the visible entry controls, triggers the same `Open` action a human uses, resolves the server-owned entry handoff, and proves that the pinned session route returns valid OpenCode HTML.
 
 For local debugging only, you may temporarily run a single profile by adding `TAILNET_REQUIRE_BOTH_PROFILES=0`.
 

@@ -46,10 +46,10 @@ function proxyRequest(ctx, req, res) {
       headers: {
         ...req.headers,
         host: `${target.host}:${target.port}`,
-        connection: req.headers.upgrade ? "upgrade" : "keep-alive",
+        connection: req.headers.upgrade ? "upgrade" : (guardHtml ? "close" : "keep-alive"),
         "accept-encoding": "identity",
       },
-      agent: getAgent(),
+      agent: guardHtml ? false : getAgent(),
     }
     const auth = upstreamAuth()
     let finished = false
