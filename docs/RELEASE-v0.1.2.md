@@ -50,10 +50,10 @@ Validated with:
 
 Live browser gate evidence:
 
-- launcher-managed landing-flow desktop: `ok=true`, `reason=session-route`, `durationMs=4129`
-- launcher-managed landing-flow mobile: `ok=true`, `reason=session-route`, `durationMs=3071`
+- launcher-managed landing-flow desktop: `ok=true`, `reason=session-route`, `durationMs=10459`
+- launcher-managed landing-flow mobile: `ok=true`, `reason=session-route`, `durationMs=6043`
 
-The final gate now starts from the public landing page, validates the visible entry controls, resolves the server-owned launch handoff, and verifies the pinned session route returns valid OpenCode HTML.
+The final gate now starts from the public landing page, validates the visible entry controls, triggers the same browser-side `Open` action a human uses, resolves the server-owned launch handoff, and verifies the pinned session route returns valid OpenCode HTML.
 
 Live relayer envelope evidence:
 

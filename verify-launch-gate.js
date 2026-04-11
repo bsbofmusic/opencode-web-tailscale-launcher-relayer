@@ -274,7 +274,26 @@ async function runProfile(browserType, startUrl, profile, outputRoot) {
     await page.locator('#open').waitFor({ state: 'visible', timeout: 10000 })
     await page.locator('#host').fill(env('TAILNET_TARGET_HOST', ''), { timeout: 10000 })
     await page.locator('#port').fill(env('TAILNET_TARGET_PORT', '3000'), { timeout: 10000 })
-    entryResult = await resolveEntry(context.request, buildLaunchEndpoint(startUrl))
+    await page.evaluate(() => {
+      const button = document.querySelector('#open')
+      button?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }))
+    })
+    const handoffDeadline = Date.now() + 10000
+    while (Date.now() < handoffDeadline) {
+      if (urls.some((item) => /\/session\//i.test(item.url))) break
+      if (launchResponses.some((item) => item.status === 303 && item.location)) break
+      await page.waitForTimeout(250)
+    }
+    const launch303 = launchResponses.find((item) => item.status === 303 && item.location)
+    const browserNav = urls.find((item) => /\/session\//i.test(item.url))
+    const finalUrl = browserNav?.url || (launch303 ? new URL(launch303.location, startUrl).toString() : '')
+    if (browserNav) {
+      entryResult = { ok: true, location: finalUrl, body: '' }
+    } else if (launch303) {
+      entryResult = { ok: true, location: finalUrl, body: '' }
+    } else {
+      entryResult = await resolveEntry(context.request, buildLaunchEndpoint(startUrl))
+    }
     if (!entryResult.ok) {
       const result = {
         profile,
