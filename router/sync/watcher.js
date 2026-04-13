@@ -6,6 +6,7 @@ const { emitTargetEvent } = require("./bus")
 const { saveStateCache } = require("./disk-cache")
 
 async function tickWatcher(state, config) {
+  // Watcher must NEVER reset client view — client view authority belongs to the browser session runtime
   if (state.watcherBusy || !state.meta?.ready || !state.clients.size) return
   if (state.promise) return
   if (state.backoffUntil && state.backoffUntil > Date.now()) return
@@ -66,6 +67,7 @@ async function tickWatcher(state, config) {
       const nextCount = nextHead.messageCount
       state.messages.set(entryKey, {
         ...entry,
+        baseline: false,
         body: next.text,
         type: "application/json",
         at: Date.now(),
@@ -78,11 +80,9 @@ async function tickWatcher(state, config) {
         nextCount,
       })
       for (const client of state.clients.values()) {
-        const view = client.view || (client.activeSessionID && client.activeDirectory
-          ? { sessionID: client.activeSessionID, directory: client.activeDirectory }
-          : null)
-        if (!view) continue
-        if (view.sessionID !== entry.sessionID || view.directory !== entry.directory) continue
+        const clientSession = clientTrackedSession(client)
+        if (!clientSession) continue
+        if (clientSession.sessionID !== entry.sessionID || clientSession.directory !== entry.directory) continue
         if (sameHead(prevHead, nextHead)) continue
         if (entry.baseline) {
           setClientHeads(state, client, nextHead, nextHead)
@@ -167,28 +167,31 @@ function sameHead(a, b) {
   )
 }
 
+function clientTrackedSession(client) {
+  if (client.activeSessionID && client.activeDirectory) {
+    return {
+      sessionID: client.activeSessionID,
+      directory: client.activeDirectory,
+    }
+  }
+  if (client.view?.sessionID && client.view?.directory) {
+    return {
+      sessionID: client.view.sessionID,
+      directory: client.view.directory,
+    }
+  }
+  return null
+}
+
 function trackedEntries(state) {
   const entries = new Map()
   for (const client of state.clients.values()) {
-    const sessionID = client.activeSessionID || client.view?.sessionID
-    const directory = client.activeDirectory || client.view?.directory
-    if (!sessionID || !directory) continue
-    const key = cacheKey(directory, sessionID, 80)
+    const session = clientTrackedSession(client)
+    if (!session) continue
+    const key = cacheKey(session.directory, session.sessionID, 80)
     entries.set(key, state.messages.get(key) || {
-      sessionID,
-      directory,
-      limit: 80,
-      body: "[]",
-      at: 0,
-      baseline: true,
-    })
-  }
-  const latest = state.meta?.sessions?.latest
-  if (latest?.id && latest?.directory) {
-    const key = cacheKey(latest.directory, latest.id, 80)
-    entries.set(key, state.messages.get(key) || {
-      sessionID: latest.id,
-      directory: latest.directory,
+      sessionID: session.sessionID,
+      directory: session.directory,
       limit: 80,
       body: "[]",
       at: 0,

@@ -709,6 +709,19 @@ async function run() {
   })
 
   await withServers({ metaCacheMs: 100, snapshotCacheMs: 100, watchIntervalMs: 200 }, async () => {
+    const client = withClient("client_progress_query_override1")
+    await getJson(`${base}/__oc/meta?${client}`)
+    await waitBackgroundReady(client)
+    const latest = await getJson(`${base}/__oc/progress?${client}&directory=${encodeURIComponent(directory)}&sessionID=ses_latest`)
+    assert.equal(latest.res.status, 200)
+    assert.equal(latest.data.launch.sessionID, "ses_latest")
+    const override = await getJson(`${base}/__oc/progress?${client}&directory=${encodeURIComponent(directory)}&sessionID=ses_prev`)
+    assert.equal(override.res.status, 200)
+    assert.equal(override.data.launch.sessionID, "ses_prev")
+    assert.equal(override.data.launch.directory, encodeDir(directory))
+  })
+
+  await withServers({ metaCacheMs: 100, snapshotCacheMs: 100, watchIntervalMs: 200 }, async () => {
     const client = withClient("client_nonlatest_baseline1")
     await getJson(`${base}/__oc/meta?${client}`)
     await waitBackgroundReady(client)

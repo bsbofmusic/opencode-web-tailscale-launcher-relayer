@@ -341,56 +341,7 @@ function launchPage(target, clientID, initial) {
       return Array.from(new Set(keys))
     }
     function seed(meta) {
-      const keyOf = function (value) { return String(value || '').replace(/\\+/g, '\\\\').toLowerCase() }
-      const data = read(serverKey)
-      if (!Array.isArray(data.list)) data.list = []
-      if (!data.projects || typeof data.projects !== 'object') data.projects = {}
-      if (!data.lastProject || typeof data.lastProject !== 'object') data.lastProject = {}
-      const seen = new Set()
-      const merged = []
-      serverKeys().forEach(function (key) {
-        const list = Array.isArray(data.projects[key]) ? data.projects[key] : []
-        list.forEach(function (item) {
-          const dir = item && item.worktree
-          const key = keyOf(dir)
-          if (!dir || seen.has(key)) return
-          seen.add(key)
-          merged.push(item)
-        })
-      })
-      ;((meta.projects && meta.projects.roots) || meta.sessions.directories || []).forEach(function (dir, index) {
-        const key = keyOf(dir)
-        if (!dir || seen.has(key)) return
-        seen.add(key)
-        merged.push({ worktree: dir, expanded: index === 0 })
-      })
-      serverKeys().forEach(function (key) {
-        data.projects[key] = merged
-        if (meta.sessions.latest && meta.sessions.latest.directory) data.lastProject[key] = meta.sessions.latest.directory
-      })
-      if (meta.projects && Array.isArray(meta.projects.inventory) && meta.projects.inventory.length) {
-        write(globalProjectKey, { value: meta.projects.inventory })
-      }
-      const layout = read(layoutKey)
-      if (!layout.lastProjectSession || typeof layout.lastProjectSession !== 'object') layout.lastProjectSession = {}
-      if (meta.projects && meta.projects.lastProjectSession && typeof meta.projects.lastProjectSession === 'object') {
-        Object.assign(layout.lastProjectSession, meta.projects.lastProjectSession)
-      }
-      if (meta.sessions.latest && meta.sessions.latest.directory && meta.sessions.latest.id) {
-        write(layoutKey, {
-          ...layout,
-          lastProjectSession: {
-            ...layout.lastProjectSession,
-            [meta.sessions.latest.directory]: {
-              directory: meta.sessions.latest.directory,
-              id: meta.sessions.latest.id,
-              at: Date.now(),
-            },
-          },
-        })
-      }
-      localStorage.setItem(defaultServerKey, origin)
-      write(serverKey, data)
+      sessionStorage.setItem(clientKey, target.client)
       sessionStorage.setItem(snapshotKey, JSON.stringify({ cachedAt: Date.now(), source: 'vps', target: target, workspaceRoots: (meta.projects && meta.projects.roots) || [] }))
     }
     function label(value) {
@@ -524,8 +475,19 @@ function sessionSyncRuntime() {
       }
     }
     const directory = decode(dirToken)
+    const decodeDir = decode
     const nextUrl = (launch) => '/' + launch.directory + '/session/' + encodeURIComponent(launch.sessionID) + '?host=' + encodeURIComponent(host) + '&port=' + encodeURIComponent(port) + '&client=' + encodeURIComponent(launch.client || client)
     const sameLaunch = (launch) => nextUrl(launch) === location.pathname + location.search
+    // Never let sync recovery jump the browser into a different workspace.
+    const workspaceMismatch = (launch) => {
+      const currentDir = location.pathname.split('/')[1] || ''
+      const launchDir = launch?.directory || ''
+      try {
+        return decodeDir(currentDir) !== decodeDir(launchDir)
+      } catch {
+        return false
+      }
+    }
     const ready = () => document.visibilityState === 'visible' && document.hasFocus()
     const recent = (action) => {
       try {
@@ -548,6 +510,10 @@ function sessionSyncRuntime() {
       const res = await fetch(withBase(path), { credentials: 'same-origin', cache: 'no-store' })
       return await res.json()
     }
+    const withView = (path) => {
+      if (!directory || !sessionID) return path
+      return path + (path.includes('?') ? '&' : '?') + 'directory=' + encodeURIComponent(directory) + '&sessionID=' + encodeURIComponent(sessionID)
+    }
     const checkHead = async () => {
       if (!directory || !sessionID) return
       const res = await fetch(withBase('/session/' + encodeURIComponent(sessionID) + '/message?limit=80&directory=' + encodeURIComponent(directory)), { credentials: 'same-origin', cache: 'no-store' })
@@ -561,22 +527,23 @@ function sessionSyncRuntime() {
       if (!prev) return
       if (Date.now() - startedAt < 10000) return
       if (prev.count === next.count && prev.tailID === next.tailID) return
+      if (window.__ocTailnetSync?.state === 'protected' || window.__ocTailnetSync?.lastAction === 'defer') return
       if (recent('soft-refresh') || recent('re-enter')) return
       mark('soft-refresh')
       location.replace(location.pathname + location.search)
     }
     const apply = async () => {
-      const data = await fetchJson('/__oc/progress')
+      const data = await fetchJson(withView('/__oc/progress'))
       window.__ocTailnetSync.state = data.syncState || 'live'
       window.__ocTailnetSync.lastAction = data.lastAction || 'noop'
       window.__ocTailnetSync.staleReason = data.staleReason || null
       if (!ready()) return
-      if (data.lastAction === 'soft-refresh' && data.syncState === 'stale' && !recent('soft-refresh')) {
+      if (data.lastAction === 'soft-refresh' && data.syncState === 'stale' && !recent('soft-refresh') && (!data.launch || !workspaceMismatch(data.launch))) {
         mark('soft-refresh')
         location.replace(location.pathname + location.search)
         return
       }
-      if (data.lastAction === 're-enter' && data.launch && !sameLaunch(data.launch) && !recent('re-enter')) {
+      if (data.lastAction === 're-enter' && data.launch && !sameLaunch(data.launch) && !recent('re-enter') && !workspaceMismatch(data.launch)) {
         mark('re-enter')
         location.replace(nextUrl(data.launch))
       }

@@ -81,8 +81,8 @@ function hydrateStateFromDisk(state, config) {
   state.bootstrap = new Map(Array.isArray(cached.bootstrap) ? cached.bootstrap : [])
   state.assets = new Map()
   state.shellHtml = cached.shellHtml || null
-  state.offline = true
-  state.offlineReason = "disk-cache-recovery"
+  state.offline = false
+  state.offlineReason = null
   if (state.meta) {
     state.meta.cache = {
       ...(state.meta.cache || {}),

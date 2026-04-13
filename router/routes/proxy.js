@@ -117,6 +117,20 @@ function rewriteProjectList(state, body) {
   return JSON.stringify(projectInventory(source, roots))
 }
 
+function currentProject(state, directory) {
+  const list = Array.isArray(state.meta?.projects?.inventory) ? state.meta.projects.inventory : state.inventory
+  const hit = (Array.isArray(list) ? list : []).find((item) => String(item?.worktree || '').toLowerCase() === String(directory || '').toLowerCase())
+  if (hit) return hit
+  const extra = Array.isArray(state.config?.extraRoots) ? state.config.extraRoots : []
+  if (!extra.some((item) => String(item || '').toLowerCase() === String(directory || '').toLowerCase())) return null
+  // Synthetic project: display-only. Must not feed back into state.meta or session latest.
+  return {
+    id: `relay:${Buffer.from(String(directory), 'utf8').toString('base64').replace(/=+$/g, '')}`,
+    worktree: directory,
+    sandboxes: [],
+  }
+}
+
 function parseJsonArray(body) {
   try {
     const rows = JSON.parse(body || "[]")
@@ -129,6 +143,25 @@ function parseJsonArray(body) {
 
 function proxyRequest(ctx, req, res) {
   const { target, state, client, reqUrl, config, wantCookie, priority } = ctx
+  const directory = requestDirectory(client, reqUrl)
+  const projectMatch = reqUrl.pathname.match(/^\/project\/([^/]+)$/)
+  const projectID = projectMatch ? decodeURIComponent(projectMatch[1]) : null
+  const syntheticProject = directory ? currentProject(state, directory) : null
+  if (req.method === "GET" && reqUrl.pathname === "/project/current" && syntheticProject?.id && String(syntheticProject.id).startsWith("relay:")) {
+    clearLastReason(state, client)
+    json(res, 200, syntheticProject, relayHeaders(priority, "proxy", "synthetic-project-current"))
+    return
+  }
+  if (req.method === "PATCH" && projectID && String(projectID).startsWith("relay:") && directory) {
+    const item = syntheticProject && syntheticProject.id === projectID ? syntheticProject : {
+      id: projectID,
+      worktree: directory,
+      sandboxes: [],
+    }
+    clearLastReason(state, client)
+    json(res, 200, item, relayHeaders(priority, "proxy", "synthetic-project-open"))
+    return
+  }
   const heavy = req.method === "GET" && isHeavyRequest(reqUrl)
   const promptRequest = req.method === "POST" && /^\/session\/[^/]+\/prompt_async$/.test(reqUrl.pathname)
   const guardHtml = req.method === "GET" && isSessionHtmlPath(reqUrl.pathname)
@@ -216,7 +249,7 @@ function proxyRequest(ctx, req, res) {
               const view = peer.view || (peer.activeSessionID && peer.activeDirectory ? { sessionID: peer.activeSessionID, directory: peer.activeDirectory } : null)
               if (!view) continue
               if (view.sessionID !== sessionID || view.directory !== directory) continue
-              peer.localSubmitUntil = 0
+              peer.localSubmitUntil = Date.now() + 8000
               setSyncState(peer, "stale", "peer-submit", peer.lastAction || "noop")
               emitTargetEvent(state.target, "sync-stale", {
                 client: peer.id,

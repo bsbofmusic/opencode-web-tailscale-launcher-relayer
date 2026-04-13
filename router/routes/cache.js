@@ -5,6 +5,20 @@ const { touchState, touchClient, clearLastReason, requestDirectory, messageBypas
 const { syncWarm, refresh, workspaceListForLimit, buildWorkspaceRoots, projectInventory } = require("../warm")
 const { fresh, cacheKey, bootstrapKey } = require("../util")
 
+function currentProject(state, directory) {
+  const list = Array.isArray(state.meta?.projects?.inventory) ? state.meta.projects.inventory : state.inventory
+  const hit = (Array.isArray(list) ? list : []).find((item) => String(item?.worktree || "").toLowerCase() === String(directory || "").toLowerCase())
+  if (hit) return hit
+  const extra = Array.isArray(state.config?.extraRoots) ? state.config.extraRoots : []
+  if (!extra.some((item) => String(item || "").toLowerCase() === String(directory || "").toLowerCase())) return null
+  // Synthetic project: display-only. Must not feed back into state.meta or session latest.
+  return {
+    id: `relay:${Buffer.from(String(directory), "utf8").toString("base64").replace(/=+$/g, "")}`,
+    worktree: directory,
+    sandboxes: [],
+  }
+}
+
 function parseJsonArray(body) {
   try {
     const rows = JSON.parse(String(body || "[]"))
@@ -83,6 +97,13 @@ function maybeServeCached(ctx, req, res) {
   }
 
   if (reqUrl.pathname === "/project/current" && directory) {
+    const item = currentProject(state, directory)
+    if (item?.id && String(item.id).startsWith("relay:")) {
+      state.stats.cacheHit += 1
+      clearLastReason(state, client)
+      raw(res, 200, JSON.stringify(item), "application/json", cacheHeaders(priority))
+      return true
+    }
     const hit = state.projects?.get(directory)
     if (!hit) {
       state.stats.cacheMiss += 1

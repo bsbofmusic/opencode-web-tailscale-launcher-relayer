@@ -209,9 +209,10 @@ function latestByRoot(roots, projects, workspaceSessions, fallbackList) {
 function buildMeta(target, health, list, projects, workspaceSessions, latencyMs, config) {
   const cfg = config || defaults
   const raw = Array.isArray(projects) ? projects : []
-  const roots = buildWorkspaceRoots(raw, list, cfg.extraRoots)
-  const inventory = projectInventory(raw, roots)
-  const sessionIndex = buildSessionIndex(roots, inventory, workspaceSessions, list, cfg.maxSessions)
+  const realInventory = raw.filter((item) => item && !String(item.id || "").startsWith("relay:"))
+  const roots = buildWorkspaceRoots(realInventory, list, cfg.extraRoots)
+  const inventory = projectInventory(realInventory, roots)
+  const sessionIndex = buildSessionIndex(roots, realInventory, workspaceSessions, list, cfg.maxSessions)
   const root = sessionIndex[0] || null
   return {
     target,
@@ -236,7 +237,7 @@ function buildMeta(target, health, list, projects, workspaceSessions, latencyMs,
       count: inventory.length,
       roots,
       inventory,
-      lastProjectSession: latestByRoot(roots, inventory, workspaceSessions, list),
+      lastProjectSession: latestByRoot(roots, realInventory, workspaceSessions, list),
     },
     ready: Boolean(health?.healthy === true && root?.id && root?.directory),
     cache: { source: "router", cachedAt: now(), warm: true },
@@ -272,14 +273,15 @@ function metaEnvelope(state) {
   }
   const fallbackRoots = base.sessions?.directories || []
   const raw = Array.isArray(state.inventory) ? state.inventory : []
-  const built = buildWorkspaceRoots(raw, state.sessionList, state.config?.extraRoots)
+  const realInventory = raw.filter((item) => item && !String(item.id || "").startsWith("relay:"))
+  const built = buildWorkspaceRoots(realInventory, state.sessionList, state.config?.extraRoots)
   const roots = built.length ? built : fallbackRoots
-  const inventory = projectInventory(raw, roots)
+  const inventory = projectInventory(realInventory, roots)
   const currentProjects = {
     count: inventory.length,
     roots,
     inventory,
-    lastProjectSession: latestByRoot(roots, inventory, state.workspaceSessions, state.sessionList),
+    lastProjectSession: latestByRoot(roots, realInventory, state.workspaceSessions, state.sessionList),
   }
   return {
     ...base,
@@ -632,7 +634,7 @@ async function warm(state, client, force, options, config) {
     }
     let inventory = []
     try {
-      const projects = await fetchJsonWith(target, '/project', { state }, config)
+      const projects = await fetchJsonWith(target, "/project", { state }, config)
       inventory = Array.isArray(projects.data) ? projects.data : []
     } catch {}
     const discoveryList = Array.isArray(sessions.data) ? sessions.data : []
@@ -641,42 +643,61 @@ async function warm(state, client, force, options, config) {
     state.inventoryAt = now()
     state.config = cfg
     state.sessionList = discoveryList
-    await fetchAllWorkspaceRoots(state, target, config)
-    state.sessionList = buildSessionIndex(buildWorkspaceRoots(inventory, discoveryList, cfg.extraRoots), inventory, state.workspaceSessions, discoveryList, cfg.maxSessions)
-    state.meta = buildMeta(target, health.data, discoveryList, inventory, state.workspaceSessions, health.latencyMs, config)
+
+    // FAST-PATH: build meta from DISCOVERY list only — do NOT wait for fetchAllWorkspaceRoots.
+    // compute latest from discoveryList using session time order (newest first)
+    const discoveryIndex = sortSessions(discoveryList)
+    const latestFromDiscovery = discoveryIndex[0] || null
+    const fastMetaReady = Boolean(health?.healthy === true && latestFromDiscovery?.id && latestFromDiscovery?.directory)
+    const fastInventory = (Array.isArray(inventory) ? inventory : []).filter(item => item && !String(item.id || "").startsWith("relay:"))
+    const fastRoots = buildWorkspaceRoots(fastInventory, discoveryList, cfg.extraRoots)
+    const fastMeta = buildMeta(target, health.data, discoveryList, fastInventory, new Map(), health.latencyMs, cfg)
+    state.meta = fastMeta
     state.metaAt = now()
-    state.targetStatus = state.meta.ready ? "ready" : "no-session"
-    state.failureReason = state.meta.ready ? null : state.meta.sessions.error
+    state.targetStatus = fastMetaReady ? "ready" : "no-session"
+    state.failureReason = fastMetaReady ? null : fastMeta.sessions.error || "No restoreable session found"
     state.admission = targetAdmission(state)
-    if (state.meta.ready) {
+    if (fastMetaReady) {
       state.failureCount = 0
       state.backoffUntil = 0
       state.availabilityAt = now()
     }
     saveStateCache(state, config)
-    if (!state.meta.ready) {
+    if (fastMetaReady) {
+      const latestSession = fastMeta.sessions.latest
+      const nearby = discoveryList
+        .filter((item) => item?.directory === latestSession?.directory)
+        .slice(0, health.latencyMs >= cfg.slowHealthLatencyMs ? 0 : requestedSnapshotCount)
+      setWarm(client, {
+        active: false, ready: true, first: false, percent: 100, stage: "ready",
+        note: health.latencyMs >= cfg.slowHealthLatencyMs
+          ? "Upstream is slow. Opening now and background caching remaining workspaces..."
+          : client.warm.first
+            ? "Cache index is ready. Opening the latest session..."
+            : "Latest session is ready. Opening now...",
+        cachedAt: now(), latestSessionID: latestSession?.id, latestDirectory: latestSession?.directory, error: null,
+      })
+      scheduleSnapshotWarm(state, client, target, latestSession, nearby, config)
+      state.meta.cache = { source: "router", cachedAt: now(), warm: true }
+    } else {
       setWarm(client, {
         active: false, ready: false, percent: 100, stage: "done",
-        note: state.meta.sessions.error || "No restoreable session found", cachedAt: state.metaAt,
+        note: fastMeta.sessions.error || "No restoreable session found", cachedAt: state.metaAt,
       })
-      return metaEnvelope(state)
     }
-    const latestSession = state.meta.sessions.latest
-    const nearby = state.sessionList
-      .filter((item) => item?.directory === latestSession.directory)
-      .slice(0, health.latencyMs >= cfg.slowHealthLatencyMs ? 0 : requestedSnapshotCount)
-    setWarm(client, {
-      active: false, ready: true, first: false, percent: 100, stage: "ready",
-      note: health.latencyMs >= cfg.slowHealthLatencyMs
-        ? "Upstream is slow. Opening now and reducing background cache work..."
-        : client.warm.first
-          ? "Cache index is ready. Opening the latest session..."
-          : "Latest session is ready. Opening now...",
-      cachedAt: now(), latestSessionID: latestSession.id, latestDirectory: latestSession.directory, error: null,
-    })
-    scheduleSnapshotWarm(state, client, target, latestSession, nearby, config)
-    state.meta.cache = { source: "router", cachedAt: now(), warm: true }
     saveStateCache(state, config)
+
+    // BACKGROUND: fill workspaceSessions for all roots — does NOT block the fast return
+    void fetchAllWorkspaceRoots(state, target, cfg).then(() => {
+      // after background workspace roots load, rebuild sessionIndex and meta with full workspaceSessions
+      if (!state.meta?.ready) return
+      const fullRoots = buildWorkspaceRoots(fastInventory, discoveryList, cfg.extraRoots)
+      state.sessionList = buildSessionIndex(fullRoots, fastInventory, state.workspaceSessions, discoveryList, cfg.maxSessions)
+      state.meta = buildMeta(target, health.data, discoveryList, fastInventory, state.workspaceSessions, health.latencyMs, cfg)
+      state.meta.cache = { source: "router", cachedAt: now(), warm: true }
+      saveStateCache(state, cfg)
+    }).catch(() => {})
+
     return metaEnvelope(state)
   }
   const run = Promise.race([

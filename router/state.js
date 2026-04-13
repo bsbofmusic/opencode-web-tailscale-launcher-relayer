@@ -173,6 +173,7 @@ function setSyncState(client, syncState, staleReason, lastAction) {
 function syncAction(state, client) {
   if (state.offline) return "noop"
   if (client.syncState !== "stale") return "noop"
+  if (client.localSubmitUntil && client.localSubmitUntil > now()) return "defer"
   if (clientSafeMode(client) || backgroundWarmPaused(state)) return "defer"
   if (!client.view?.sessionID || !client.view?.directory) return "re-enter"
   if ((client.refreshFailures || 0) >= 2) return "re-enter"
@@ -190,12 +191,10 @@ function targetAdmission(state) {
 
 function syncClientView(state, client) {
   const latest = state.meta?.sessions?.latest
-  if (!client.view && latest?.id && latest?.directory) {
-    client.activeSessionID = client.activeSessionID || latest.id
-    client.activeDirectory = client.activeDirectory || latest.directory
+  if (!client.view && client.activeSessionID && client.activeDirectory) {
     setClientView(client, {
-      sessionID: latest.id,
-      directory: latest.directory,
+      sessionID: client.activeSessionID,
+      directory: client.activeDirectory,
       pathname: null,
     })
   }
@@ -223,11 +222,7 @@ function syncClientView(state, client) {
     setSyncState(client, "stale", client.staleReason || "head-advanced", client.lastAction || "noop")
     return
   }
-  if (client.staleReason === "target-offline") {
-    setSyncState(client, "live", null, "noop")
-    return
-  }
-  if (!client.staleReason) setSyncState(client, "live", null, client.lastAction || "noop")
+  setSyncState(client, "live", null, "noop")
 }
 
 function touchState(state) {
