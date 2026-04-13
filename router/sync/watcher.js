@@ -10,7 +10,7 @@ async function tickWatcher(state, config) {
   if (state.watcherBusy || !state.meta?.ready || !state.clients.size) return
   if (state.promise) return
   if (state.backoffUntil && state.backoffUntil > Date.now()) return
-  state.watcherBusy = true
+    state.watcherBusy = true
   const { fetchJson, fetchJsonWith, buildWorkspaceRoots, buildSessionIndex, buildMeta, fetchAllWorkspaceRoots, projectInventory } = require("../warm")
   try {
     const protectedMode = backgroundWarmPaused(state)
@@ -22,19 +22,25 @@ async function tickWatcher(state, config) {
     try {
       const projects = await fetchJsonWith(state.target, "/project", { state, priority: "background" }, config)
       inventory = Array.isArray(projects.data) ? projects.data : state.inventory
-      // Don't overwrite state.inventory here — will synthesize with extraRoots first
       state.inventoryAt = Date.now()
     } catch {}
 
     state.offline = false
     state.offlineReason = null
 
-    const prevList = JSON.stringify(state.sessionList)
     const discoveryList = Array.isArray(sessions.data) ? sessions.data : []
+    // Capture old session list BEFORE overwriting — used to detect meaningful changes
+    const prevSessionList = state.sessionList
+    const sessionListChanged = JSON.stringify(prevSessionList) !== JSON.stringify(discoveryList)
     inventory = projectInventory(inventory, buildWorkspaceRoots(inventory, discoveryList, config.extraRoots))
     state.inventory = inventory
     state.sessionList = discoveryList
-    await fetchAllWorkspaceRoots(state, state.target, config)
+
+    // Skip expensive per-workspace root scan when the discovery list is unchanged.
+    // watcher has no authority to reset client view; it only keeps caches fresh.
+    if (sessionListChanged) {
+      await fetchAllWorkspaceRoots(state, state.target, config)
+    }
     const roots = buildWorkspaceRoots(state.inventory, discoveryList, config.extraRoots)
     state.sessionList = buildSessionIndex(roots, state.inventory, state.workspaceSessions, discoveryList, config.maxSessions || 80)
     state.meta = buildMeta(state.target, health.data, discoveryList, state.inventory, state.workspaceSessions, health.latencyMs, config)

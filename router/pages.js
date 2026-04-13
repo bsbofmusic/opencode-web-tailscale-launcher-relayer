@@ -529,6 +529,8 @@ function sessionSyncRuntime() {
       if (prev.count === next.count && prev.tailID === next.tailID) return
       if (window.__ocTailnetSync?.state === 'protected' || window.__ocTailnetSync?.lastAction === 'defer') return
       if (recent('soft-refresh') || recent('re-enter')) return
+      // Never refresh across a workspace boundary — same guard as apply()
+      if (workspaceMismatch({ directory })) return
       mark('soft-refresh')
       location.replace(location.pathname + location.search)
     }

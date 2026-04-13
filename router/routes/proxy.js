@@ -152,10 +152,13 @@ function proxyRequest(ctx, req, res) {
     json(res, 200, syntheticProject, relayHeaders(priority, "proxy", "synthetic-project-current"))
     return
   }
-  if (req.method === "PATCH" && projectID && String(projectID).startsWith("relay:") && directory) {
+  // Synthetic relay:* project — always answer locally, never forward to upstream.
+  // Without this guard a PATCH with a relay:* id but missing/unstated directory would
+  // fall through to runRequest() and hit the upstream 500.
+  if (req.method === "PATCH" && projectID && String(projectID).startsWith("relay:")) {
     const item = syntheticProject && syntheticProject.id === projectID ? syntheticProject : {
       id: projectID,
-      worktree: directory,
+      worktree: directory || "",
       sandboxes: [],
     }
     clearLastReason(state, client)

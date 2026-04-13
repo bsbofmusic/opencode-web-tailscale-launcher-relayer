@@ -56,6 +56,22 @@ node vps-opencode-router.js
 
 ## 升级记录
 
+### v0.1.6（2026-04-13）— Phase 2-5 收口
+
+**Phase 2b — disk-cache 重启恢复旧状态**
+relayer 重启后从磁盘加载缓存时，没有检查缓存是否过期。缓存超过 5 分钟就标记为"过期但可用"，确保不阻塞 UI 显示，同时通知下游数据可能不新鲜需要刷新。
+
+**Phase 3 — watcher 每次 tick 全量扫描**
+watcher 每次运行都无差别调用 `fetchAllWorkspaceRoots`，即使 session 列表没有任何变化。改为比较 session discovery list 是否变化，只有变化时才做全量扫描，大幅降低 watcher CPU/网络消耗。
+
+**Phase 4 — checkHead 缺 workspaceMismatch 保护**
+浏览器后台 head 检查触发 soft-refresh 时没有检查工作区是否匹配，可能导致跨工作区刷新。补全与 `apply()` 一致的 `workspaceMismatch` 保护。
+
+**Phase 5 — PATCH relay:* directory 缺失时仍发上游**
+当 directory 参数缺失时，`PATCH /project/relay:*` 会越过本地短路逻辑直接发到 OpenCode 上游并返回 500。改为任何带 `relay:*` 项目 ID 的 PATCH 都本地处理，不再依赖 directory 参数。
+
+---
+
 ### v0.1.5（2026-04-13）— Phase 1 收口 85分版
 
 **修复了什么问题：**

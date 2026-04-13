@@ -65,6 +65,11 @@ function loadStateCache(target, config) {
   return JSON.parse(fs.readFileSync(file, "utf8"))
 }
 
+// Maximum age of disk cache before it is considered stale for launch decisions.
+// After this threshold the cache is restored for display but marked stale so the
+// watcher/refresh logic treats it as needing a background update.
+const MAX_CACHE_AGE_MS = 5 * 60 * 1000 // 5 minutes
+
 function hydrateStateFromDisk(state, config) {
   const cached = loadStateCache(state.target, config || state.config)
   if (!cached) return false
@@ -83,12 +88,17 @@ function hydrateStateFromDisk(state, config) {
   state.shellHtml = cached.shellHtml || null
   state.offline = false
   state.offlineReason = null
+
+  const cacheAge = now() - (cached.savedAt || 0)
+  const staleCache = cacheAge > MAX_CACHE_AGE_MS
+
   if (state.meta) {
     state.meta.cache = {
       ...(state.meta.cache || {}),
       source: "disk",
       cachedAt: cached.savedAt || state.metaAt || now(),
-      warm: true,
+      warm: !staleCache,
+      stale: staleCache,
     }
   }
   return true
