@@ -79,12 +79,31 @@ async function tickWatcher(state, config) {
         previousCount: prevCount,
         nextCount,
       })
-      // v0.1.6 Invariant #2: Background never overwrites user current choice
-      // Watcher is pure observer — updates cache, emits events, never touches client.view/syncState
-      // Client sync state updates now happen in:
-      // 1. state.js syncClientView() - called from control.js progressPayload
-      // 2. proxy.js session HTML load - when user navigates to session
-      // SSE events allow browser runtime to decide when to refresh
+      
+      // v0.1.6.2: Restore per-client head advancement signaling (fixes stale messages + auto refresh)
+      // Watcher updates remoteHead/syncState for matching clients, but NEVER touches client.view
+      // This preserves Invariant #2 (watcher doesn't overwrite user navigation) while fixing message sync
+      for (const client of state.clients.values()) {
+        const clientSession = clientTrackedSession(client)
+        if (!clientSession) continue
+        if (clientSession.sessionID !== entry.sessionID || clientSession.directory !== entry.directory) continue
+        if (sameHead(prevHead, nextHead)) continue
+        
+        // Update remoteHead only, preserve viewHead (don't touch client.view/active*)
+        setClientHeads(state, client, client.viewHead || prevHead, nextHead)
+        setSyncState(client, "stale", "head-advanced", client.lastAction || "noop")
+        
+        emitTargetEvent(state.target, "sync-stale", {
+          client: client.id,
+          sessionID: entry.sessionID,
+          directory: entry.directory,
+          reason: "head-advanced",
+          action: client.lastAction || "noop",
+          state: client.syncState,
+          version: state.syncVersion,
+          timestamp: Date.now(),
+        })
+      }
     }
 
     saveStateCache(state, config)
