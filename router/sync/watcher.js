@@ -79,30 +79,12 @@ async function tickWatcher(state, config) {
         previousCount: prevCount,
         nextCount,
       })
-      for (const client of state.clients.values()) {
-        const clientSession = clientTrackedSession(client)
-        if (!clientSession) continue
-        if (clientSession.sessionID !== entry.sessionID || clientSession.directory !== entry.directory) continue
-        if (sameHead(prevHead, nextHead)) continue
-        if (entry.baseline) {
-          setClientHeads(state, client, nextHead, nextHead)
-          setSyncState(client, state.offline ? "offline" : "live", null, "noop")
-          continue
-        }
-        const viewHead = client.remoteHead?.sessionID ? client.remoteHead : prevHead
-        setClientHeads(state, client, viewHead, nextHead)
-        setSyncState(client, "stale", "head-advanced", client.lastAction || "noop")
-        emitTargetEvent(state.target, "sync-stale", {
-          client: client.id,
-          sessionID: entry.sessionID,
-          directory: entry.directory,
-          reason: "head-advanced",
-          action: client.lastAction || "noop",
-          state: client.syncState,
-          version: state.syncVersion,
-          timestamp: Date.now(),
-        })
-      }
+      // v0.1.6 Invariant #2: Background never overwrites user current choice
+      // Watcher is pure observer — updates cache, emits events, never touches client.view/syncState
+      // Client sync state updates now happen in:
+      // 1. state.js syncClientView() - called from control.js progressPayload
+      // 2. proxy.js session HTML load - when user navigates to session
+      // SSE events allow browser runtime to decide when to refresh
     }
 
     saveStateCache(state, config)

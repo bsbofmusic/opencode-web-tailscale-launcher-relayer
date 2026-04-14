@@ -197,11 +197,21 @@ function buildSessionIndex(roots, projects, workspaceSessions, fallbackList, lim
 }
 
 function latestByRoot(roots, projects, workspaceSessions, fallbackList) {
+  // v0.1.6 Invariant #6: Workspace model from upstream, not relayer synthesis
+  // Only use workspaceSessions (verified per-workspace cache), never fallback to mixed discovery list
+  // This prevents cross-workspace session mixing (e.g., E:\CODE getting D:\CODE's latest)
   const map = {}
   for (const root of Array.isArray(roots) ? roots : []) {
-    const item = workspaceSessionRows(root, projects, workspaceSessions, fallbackList)[0]
-    if (!item?.id || !item?.directory) continue
-    map[root] = { directory: item.directory, id: item.id, at: now() }
+    const entry = workspaceSessionEntry(workspaceSessions, root)
+    if (entry && Array.isArray(entry.items) && entry.items.length > 0) {
+      const sorted = sortSessions(entry.items)
+      const item = sorted[0]
+      if (item?.id && item?.directory) {
+        map[root] = { directory: item.directory, id: item.id, at: now() }
+      }
+    }
+    // No fallback to discovery list — if workspaceSessions doesn't have it, leave empty
+    // This is safer than guessing from mixed global list
   }
   return map
 }

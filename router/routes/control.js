@@ -24,9 +24,14 @@ function progressPayload(state, client) {
   syncWarm(state, client)
   state.admission = targetAdmission(state)
   const launchReady = Boolean(state.meta?.ready && state.meta?.sessions?.latest?.id && state.meta?.sessions?.latest?.directory)
-  const launchTarget = (client.activeSessionID && client.activeDirectory)
-    ? { id: client.activeSessionID, directory: client.activeDirectory }
-    : (state.meta?.sessions?.latest ? { id: state.meta.sessions.latest.id, directory: state.meta.sessions.latest.directory } : null)
+  // v0.1.6 Invariant #3: Explicit user context always > latest
+  // Priority: client.view (user's current session) > client.active* (URL params) > meta.sessions.latest (global fallback)
+  // This prevents relayer from overriding user's established workspace with global latest
+  const launchTarget = client.view?.sessionID && client.view?.directory
+    ? { id: client.view.sessionID, directory: client.view.directory }
+    : (client.activeSessionID && client.activeDirectory)
+      ? { id: client.activeSessionID, directory: client.activeDirectory }
+      : (state.meta?.sessions?.latest ? { id: state.meta.sessions.latest.id, directory: state.meta.sessions.latest.directory } : null)
   syncClientView(state, client)
   const refreshing = Boolean(client.warm.active && warmBusy(state))
   const action = syncAction(state, client)
