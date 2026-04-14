@@ -170,10 +170,16 @@ function projectInventory(projects, roots) {
     const key = dirKey(dir)
     if (!dir || seen.has(key)) continue
     seen.add(key)
+    // v0.1.6.1: Synthetic projects must have time field to prevent crash in home.tsx:108
+    // OpenCode expects project.time.updated for display
     list.push({
       id: `relay:${Buffer.from(dir, "utf8").toString("base64").replace(/=+$/g, "")}`,
       worktree: dir,
       sandboxes: [],
+      time: {
+        created: now(),
+        updated: now(),
+      },
     })
   }
   return list
