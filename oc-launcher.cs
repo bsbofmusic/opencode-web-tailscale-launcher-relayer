@@ -8,11 +8,11 @@ using System.Management;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
-using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows.Forms;
 using Microsoft.Win32;
+using System.Runtime.InteropServices;
 
 namespace OpenCodeTailnetLauncher
 {
@@ -42,7 +42,7 @@ namespace OpenCodeTailnetLauncher
                 catch (Exception ex)
                 {
                     var dir = Path.GetDirectoryName(exe);
-                    File.AppendAllText(Path.Combine(dir, "launcher-cli-error.log"), ex + Environment.NewLine);
+                    File.AppendAllText(Path.Combine(dir, "launcher-cli-error.log"), ex.ToString() + Environment.NewLine);
                     return;
                 }
             }
@@ -89,17 +89,26 @@ namespace OpenCodeTailnetLauncher
             Directory.CreateDirectory(this.logDir);
             this.cfg = Settings.Load(this.root);
 
-            this.stateItem = new ToolStripMenuItem("State: starting") { Enabled = false };
-            var versionItem = new ToolStripMenuItem("Version: " + AppVersion) { Enabled = false };
+            this.stateItem = new ToolStripMenuItem("State: starting");
+            this.stateItem.Enabled = false;
+
+            var versionItem = new ToolStripMenuItem("Version: " + AppVersion);
+            versionItem.Enabled = false;
+
             var openItem = new ToolStripMenuItem("Open Router");
             openItem.Click += delegate { this.OpenRouter(); };
+
             var restartItem = new ToolStripMenuItem("Restart OpenCode");
             restartItem.Click += delegate { this.RestartOpenCode(); };
+
             var logItem = new ToolStripMenuItem("Open Log Folder");
             logItem.Click += delegate { this.OpenLogs(); };
-            this.autostartItem = new ToolStripMenuItem("Run At Login") { CheckOnClick = true };
+
+            this.autostartItem = new ToolStripMenuItem("Run At Login");
+            this.autostartItem.CheckOnClick = true;
             this.autostartItem.Checked = this.HasAutostart();
             this.autostartItem.Click += delegate { this.ToggleAutostart(); };
+
             var exitItem = new ToolStripMenuItem("Exit Launcher");
             exitItem.Click += delegate { this.ExitLauncher(); };
 
@@ -234,14 +243,21 @@ namespace OpenCodeTailnetLauncher
             info.EnvironmentVariables["OPENCODE_PID"] = string.Empty;
             info.EnvironmentVariables["OPENCODE_SERVER_PASSWORD"] = string.Empty;
             info.EnvironmentVariables["OPENCODE_SERVER_USERNAME"] = string.Empty;
-            if (info.EnvironmentVariables.ContainsKey("XDG_STATE_HOME")) info.EnvironmentVariables.Remove("XDG_STATE_HOME");
+            if (info.EnvironmentVariables.ContainsKey("XDG_STATE_HOME"))
+            {
+                info.EnvironmentVariables.Remove("XDG_STATE_HOME");
+            }
 
             this.child = new Process();
             this.child.StartInfo = info;
             this.child.EnableRaisingEvents = true;
             this.child.OutputDataReceived += delegate(object sender, DataReceivedEventArgs e) { if (!string.IsNullOrWhiteSpace(e.Data)) this.Log("stdout " + e.Data); };
             this.child.ErrorDataReceived += delegate(object sender, DataReceivedEventArgs e) { if (!string.IsNullOrWhiteSpace(e.Data)) this.Log("stderr " + e.Data); };
-            this.child.Exited += delegate { this.Log("opencode exited"); this.child = null; };
+            this.child.Exited += delegate
+            {
+                this.Log("opencode exited");
+                this.child = null;
+            };
 
             this.child.Start();
             this.child.BeginOutputReadLine();
@@ -256,7 +272,10 @@ namespace OpenCodeTailnetLauncher
             try
             {
                 var next = string.IsNullOrWhiteSpace(this.host) ? FindTailIp() : this.host;
-                if (!string.IsNullOrWhiteSpace(next)) KillMatching(next, this.cfg.Port);
+                if (!string.IsNullOrWhiteSpace(next))
+                {
+                    KillMatching(next, this.cfg.Port);
+                }
                 this.child = null;
                 this.Log("manual restart requested");
                 this.Check();
@@ -270,13 +289,20 @@ namespace OpenCodeTailnetLauncher
 
         private void OpenRouter()
         {
-            try { Process.Start(this.BuildRouterUrl()); } catch (Exception ex) { this.Log("open router failed: " + ex.Message); }
+            try
+            {
+                Process.Start(this.BuildRouterUrl());
+            }
+            catch (Exception ex)
+            {
+                this.Log("open router failed: " + ex.Message);
+            }
         }
 
         private string BuildRouterUrl()
         {
             var nextHost = string.IsNullOrWhiteSpace(this.host) ? FindTailIp() : this.host;
-            var raw = string.IsNullOrWhiteSpace(this.cfg.RouterUrl) ? "https://your-domain.example.com/?autogo=1" : this.cfg.RouterUrl.Trim();
+            var raw = string.IsNullOrWhiteSpace(this.cfg.RouterUrl) ? "https://opencode.cosymart.top/?autogo=1" : this.cfg.RouterUrl.Trim();
             if (string.IsNullOrWhiteSpace(nextHost)) return raw;
             try
             {
@@ -288,7 +314,10 @@ namespace OpenCodeTailnetLauncher
                 builder.Query = BuildQuery(query);
                 return builder.Uri.ToString();
             }
-            catch { return raw; }
+            catch
+            {
+                return raw;
+            }
         }
 
         private static Dictionary<string, string> ParseQuery(string query)
@@ -314,7 +343,14 @@ namespace OpenCodeTailnetLauncher
 
         private void OpenLogs()
         {
-            try { Process.Start(this.logDir); } catch (Exception ex) { this.Log("open logs failed: " + ex.Message); }
+            try
+            {
+                Process.Start(this.logDir);
+            }
+            catch (Exception ex)
+            {
+                this.Log("open logs failed: " + ex.Message);
+            }
         }
 
         private void ToggleAutostart()
@@ -374,7 +410,8 @@ namespace OpenCodeTailnetLauncher
         {
             if (string.IsNullOrWhiteSpace(value)) return "unknown error";
             value = value.Replace("\r", " ").Replace("\n", " ").Trim();
-            return value.Length > 56 ? value.Substring(0, 56) : value;
+            if (value.Length > 56) return value.Substring(0, 56);
+            return value;
         }
 
         private static string FindTailIp()
@@ -412,7 +449,10 @@ namespace OpenCodeTailnetLauncher
                     return true;
                 }
             }
-            catch { return false; }
+            catch
+            {
+                return false;
+            }
         }
 
         private static void KillMatching(string host, int port)
@@ -439,8 +479,13 @@ namespace OpenCodeTailnetLauncher
             {
                 try
                 {
-                    var info = new ProcessStartInfo("taskkill.exe", "/PID " + pid + " /T /F") { CreateNoWindow = true, UseShellExecute = false };
-                    using (var proc = Process.Start(info)) proc.WaitForExit(3000);
+                    var info = new ProcessStartInfo("taskkill.exe", "/PID " + pid + " /T /F");
+                    info.CreateNoWindow = true;
+                    info.UseShellExecute = false;
+                    using (var proc = Process.Start(info))
+                    {
+                        proc.WaitForExit(3000);
+                    }
                 }
                 catch { }
             }
@@ -473,8 +518,19 @@ namespace OpenCodeTailnetLauncher
 
         private static Icon LoadIcon(string iconPath, string exePath)
         {
-            try { if (File.Exists(iconPath)) return new Icon(iconPath); } catch { }
-            try { var icon = Icon.ExtractAssociatedIcon(exePath); if (icon != null) return icon; } catch { }
+            try
+            {
+                if (File.Exists(iconPath)) return new Icon(iconPath);
+            }
+            catch { }
+
+            try
+            {
+                var icon = Icon.ExtractAssociatedIcon(exePath);
+                if (icon != null) return icon;
+            }
+            catch { }
+
             return SystemIcons.Application;
         }
 
@@ -493,8 +549,14 @@ namespace OpenCodeTailnetLauncher
                     g.DrawEllipse(edge, 9.0f, 9.0f, 6.0f, 6.0f);
                 }
                 var handle = canvas.GetHicon();
-                try { return (Icon)Icon.FromHandle(handle).Clone(); }
-                finally { DestroyIcon(handle); }
+                try
+                {
+                    return (Icon)Icon.FromHandle(handle).Clone();
+                }
+                finally
+                {
+                    DestroyIcon(handle);
+                }
             }
         }
 
@@ -517,8 +579,8 @@ namespace OpenCodeTailnetLauncher
             var cfg = new Settings();
             cfg.CliPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "npm", "opencode.cmd");
             cfg.Port = 3000;
-            cfg.CorsOrigin = "https://your-domain.example.com";
-            cfg.RouterUrl = "https://your-domain.example.com/?autogo=1";
+            cfg.CorsOrigin = "https://opencode.cosymart.top";
+            cfg.RouterUrl = "https://opencode.cosymart.top/?autogo=1";
             cfg.PollSeconds = 5;
             cfg.AutoStart = false;
 

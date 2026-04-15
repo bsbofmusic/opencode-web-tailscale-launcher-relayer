@@ -1,0 +1,16 @@
+[Unit]
+Description=OpenCode Tailscale Session Proxy
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/opencode-session-proxy
+ExecStart=/usr/bin/node /opt/opencode-session-proxy/vps-session-proxy.js
+Restart=always
+RestartSec=2
+Environment=OPENCODE_PROXY_HOST=127.0.0.1
+Environment=OPENCODE_PROXY_PORT=33101
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,24 @@
+[Unit]
+Description=OpenCode Tailnet Router
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/opencode-router
+ExecStart=/usr/bin/node /opt/opencode-router/vps-opencode-router.js
+Restart=always
+RestartSec=2
+Environment=OPENCODE_ROUTER_HOST=127.0.0.1
+Environment=OPENCODE_ROUTER_PORT=33102
+Environment=OPENCODE_ROUTER_CACHE_DIR=/opt/opencode-router/cache
+Environment=OPENCODE_ROUTER_INSPECT_TIMEOUT_MS=8000
+Environment=OPENCODE_ROUTER_WARM_TIMEOUT_MS=15000
+Environment=OPENCODE_ROUTER_WATCH_INTERVAL_MS=5000
+Environment=OPENCODE_ROUTER_DIRECTORY_DISCOVERY_LIMIT=120
+Environment=OPENCODE_ROUTER_WATCHER_SESSION_LIMIT=40
+Environment=OPENCODE_ROUTER_LAUNCHER_HOSTS=100.121.130.36
+Environment="OPENCODE_ROUTER_EXTRA_ROOTS=E:\\CODE"
+
+[Install]
+WantedBy=multi-user.target

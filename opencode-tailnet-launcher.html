@@ -1,0 +1,419 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenCode Session Restore</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #08111d;
+      --panel: rgba(13, 21, 35, 0.94);
+      --line: #20314b;
+      --text: #edf5ff;
+      --muted: #8fa6c7;
+      --accent: #3787ff;
+      --accent-soft: #12294d;
+      --ok: #79e29b;
+      --warn: #f1bc65;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at top, #13233e 0, var(--bg) 45%);
+      color: var(--text);
+      font: 14px/1.5 Inter, "Segoe UI", sans-serif;
+    }
+    main {
+      max-width: 1160px;
+      margin: 0 auto;
+      padding: 28px 18px 40px;
+    }
+    .hero {
+      margin-bottom: 18px;
+    }
+    h1 {
+      margin: 0;
+      font-size: 32px;
+      line-height: 1.1;
+    }
+    .sub {
+      margin: 10px 0 0;
+      color: var(--muted);
+      max-width: 860px;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      padding: 18px;
+      backdrop-filter: blur(12px);
+      box-shadow: 0 20px 60px rgba(0,0,0,.28);
+    }
+    .controls {
+      display: grid;
+      grid-template-columns: 1.15fr 110px 1fr;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    label {
+      display: block;
+      font-size: 12px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: .04em;
+      margin: 0 0 6px;
+    }
+    input {
+      width: 100%;
+      height: 46px;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: #09101b;
+      color: var(--text);
+      padding: 0 14px;
+      font-size: 15px;
+    }
+    .actions, .presets, .dirlist {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .actions { margin-bottom: 14px; }
+    button, a {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 10px 14px;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: #0f1928;
+      color: var(--text);
+      cursor: pointer;
+      text-decoration: none;
+      font: inherit;
+    }
+    button.primary, a.primary {
+      background: linear-gradient(180deg, #3d8cff, var(--accent));
+      border-color: #2e77e7;
+    }
+    button.soft {
+      background: var(--accent-soft);
+    }
+    .meta {
+      min-height: 20px;
+      color: var(--muted);
+      margin-bottom: 14px;
+    }
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: rgba(7, 12, 22, .92);
+      padding: 14px;
+    }
+    .card b {
+      display: block;
+      font-size: 22px;
+      margin-top: 4px;
+    }
+    .small { color: var(--muted); font-size: 12px; }
+    .dirlist { margin-bottom: 16px; }
+    .dirbtn {
+      text-align: left;
+      justify-content: flex-start;
+      max-width: 100%;
+    }
+    .dirbtn.active {
+      border-color: #4f92ff;
+      background: #12284b;
+    }
+    .sessions {
+      display: grid;
+      gap: 10px;
+    }
+    .session {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      align-items: center;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 14px;
+      background: rgba(7, 12, 22, .92);
+    }
+    .title {
+      font-size: 15px;
+      word-break: break-word;
+    }
+    .detail {
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 4px;
+      word-break: break-all;
+    }
+    .badge {
+      display: inline-block;
+      margin-left: 8px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: rgba(121,226,155,.14);
+      color: var(--ok);
+      font-size: 11px;
+      vertical-align: middle;
+    }
+    .empty {
+      border: 1px dashed var(--line);
+      border-radius: 16px;
+      padding: 16px;
+      color: var(--warn);
+    }
+    code { color: #d3e3ff; }
+    @media (max-width: 820px) {
+      .controls, .summary { grid-template-columns: 1fr; }
+      .session { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="hero">
+      <h1>OpenCode Session Restore</h1>
+      <p class="sub">这里不再依赖 OpenCode Web 自己记不记得“已打开项目”。页面会通过 VPS 代查 Tailnet 里的 OpenCode 历史 session，自动找出远端目录，再直接恢复到具体会话。</p>
+    </section>
+
+    <section class="panel">
+      <div class="controls">
+        <div>
+          <label for="host">Tailscale Host</label>
+          <input id="host" value="100.121.130.36" placeholder="100.121.130.36">
+        </div>
+        <div>
+          <label for="port">Port</label>
+          <input id="port" value="3000" placeholder="3000">
+        </div>
+        <div>
+          <label for="query">Search</label>
+          <input id="query" placeholder="session title / directory / id">
+        </div>
+      </div>
+
+      <div class="actions">
+        <button id="scan" class="primary" type="button">Scan Sessions</button>
+        <button id="latest" type="button">Open Latest</button>
+        <a id="raw" href="#">Open Raw OpenCode</a>
+      </div>
+
+      <div class="presets">
+        <button class="soft preset" data-host="100.121.130.36" data-port="3000" type="button">A 电脑</button>
+      </div>
+
+      <div id="meta" class="meta"></div>
+
+      <div class="summary">
+        <div class="card"><span class="small">Target</span><b id="sum-target">-</b></div>
+        <div class="card"><span class="small">Directories</span><b id="sum-dirs">0</b></div>
+        <div class="card"><span class="small">Sessions</span><b id="sum-sessions">0</b></div>
+      </div>
+
+      <div id="dirlist" class="dirlist"></div>
+      <div id="sessions" class="sessions"></div>
+    </section>
+  </main>
+
+  <script>
+    const host = document.getElementById('host')
+    const port = document.getElementById('port')
+    const query = document.getElementById('query')
+    const meta = document.getElementById('meta')
+    const dirlist = document.getElementById('dirlist')
+    const sessions = document.getElementById('sessions')
+    const raw = document.getElementById('raw')
+    const sumTarget = document.getElementById('sum-target')
+    const sumDirs = document.getElementById('sum-dirs')
+    const sumSessions = document.getElementById('sum-sessions')
+    const qs = new URLSearchParams(location.search)
+    const state = { directories: [], sessions: [], activeDir: '' }
+
+    function save() {
+      localStorage.setItem('oc-restore-host', host.value.trim())
+      localStorage.setItem('oc-restore-port', port.value.trim() || '3000')
+      localStorage.setItem('oc-restore-query', query.value.trim())
+    }
+
+    function validIp(value) {
+      return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(value)
+    }
+
+    function openCodeBase() {
+      const ip = host.value.trim()
+      const p = (port.value.trim() || '3000').replace(/\D/g, '') || '3000'
+      if (!validIp(ip)) throw new Error('Tailscale IPv4 不正确')
+      return `http://${ip}:${p}`
+    }
+
+    function encodeDir(value) {
+      return btoa(unescape(encodeURIComponent(value)))
+    }
+
+    function sessionUrl(item) {
+      return `${openCodeBase()}/${encodeDir(item.directory)}/session/${item.id}`
+    }
+
+    function directoryUrl(directory) {
+      return `${openCodeBase()}/${encodeDir(directory)}/session`
+    }
+
+    function formatTime(value) {
+      if (!value) return 'unknown'
+      return new Date(value).toLocaleString()
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;')
+    }
+
+    function syncRaw() {
+      try {
+        raw.href = openCodeBase()
+        raw.textContent = `Open Raw OpenCode: ${openCodeBase()}`
+      } catch (error) {
+        raw.href = '#'
+        raw.textContent = 'Open Raw OpenCode'
+      }
+    }
+
+    function currentSessions() {
+      if (!state.activeDir) return state.sessions
+      return state.sessions.filter((item) => item.directory === state.activeDir)
+    }
+
+    function renderDirectories() {
+      if (!state.directories.length) {
+        dirlist.innerHTML = ''
+        return
+      }
+
+      const allActive = state.activeDir ? '' : ' active'
+      dirlist.innerHTML = [`<button class="dirbtn${allActive}" data-dir="">全部目录</button>`]
+        .concat(state.directories.map((item) => {
+          const active = item.directory === state.activeDir ? ' active' : ''
+          return `<button class="dirbtn${active}" data-dir="${escapeHtml(item.directory)}">${escapeHtml(item.directory)} (${item.count})</button>`
+        }))
+        .join('')
+
+      for (const button of dirlist.querySelectorAll('button')) {
+        button.addEventListener('click', () => {
+          state.activeDir = button.dataset.dir || ''
+          renderDirectories()
+          renderSessions()
+        })
+      }
+    }
+
+    function renderSessions() {
+      const items = currentSessions()
+      if (!items.length) {
+        sessions.innerHTML = '<div class="empty">没有命中的 session。你可以换 host，或者改搜索条件重新扫描。</div>'
+        return
+      }
+
+      sessions.innerHTML = items.map((item, index) => {
+        const title = item.title || item.slug || item.id
+        const latest = index === 0 && (!state.activeDir || item.directory === state.activeDir) ? '<span class="badge">latest</span>' : ''
+        return `
+          <div class="session">
+            <div>
+              <div class="title">${escapeHtml(title)}${latest}</div>
+              <div class="detail">${escapeHtml(item.directory)} | ${escapeHtml(item.id)}</div>
+              <div class="detail">updated ${escapeHtml(formatTime(item.time && (item.time.updated || item.time.created)))}</div>
+            </div>
+            <div class="actions">
+              <a class="primary" href="${sessionUrl(item)}">恢复 Session</a>
+              <a href="${directoryUrl(item.directory)}">打开目录</a>
+            </div>
+          </div>
+        `
+      }).join('')
+    }
+
+    function renderSummary(target, dirs, count) {
+      sumTarget.textContent = target
+      sumDirs.textContent = String(dirs)
+      sumSessions.textContent = String(count)
+    }
+
+    async function scan(autoOpenLatest) {
+      save()
+      syncRaw()
+      meta.textContent = 'Scanning Tailnet sessions...'
+      sessions.innerHTML = ''
+      dirlist.innerHTML = ''
+
+      const url = new URL('/api/sessions', location.origin)
+      url.searchParams.set('host', host.value.trim())
+      url.searchParams.set('port', port.value.trim() || '3000')
+      url.searchParams.set('query', query.value.trim())
+      url.searchParams.set('limit', '200')
+
+      try {
+        const response = await fetch(url)
+        const data = await response.json()
+        if (!response.ok) throw new Error(data.error || `Request failed: ${response.status}`)
+
+        state.directories = data.directories || []
+        state.sessions = data.sessions || []
+        state.activeDir = state.directories[0] ? state.directories[0].directory : ''
+
+        renderSummary(`${data.targetHost}:${data.targetPort}`, state.directories.length, state.sessions.length)
+        meta.innerHTML = `OpenCode ${escapeHtml(data.health && data.health.version ? data.health.version : 'unknown')} | target <code>${escapeHtml(data.targetHost)}:${escapeHtml(data.targetPort)}</code>`
+        renderDirectories()
+        renderSessions()
+
+        if (autoOpenLatest && state.sessions[0]) {
+          location.href = sessionUrl(state.sessions[0])
+        }
+      } catch (error) {
+        renderSummary('-', 0, 0)
+        meta.textContent = error.message || String(error)
+        sessions.innerHTML = '<div class="empty">扫描失败。确认目标机器正在运行 OpenCode Web，并且 VPS 可以通过 Tailscale 访问它。</div>'
+      }
+    }
+
+    host.value = qs.get('host') || localStorage.getItem('oc-restore-host') || '100.121.130.36'
+    port.value = qs.get('port') || localStorage.getItem('oc-restore-port') || '3000'
+    query.value = qs.get('query') || localStorage.getItem('oc-restore-query') || ''
+
+    document.getElementById('scan').addEventListener('click', () => scan(false))
+    document.getElementById('latest').addEventListener('click', () => scan(true))
+    for (const button of document.querySelectorAll('.preset')) {
+      button.addEventListener('click', () => {
+        host.value = button.dataset.host || host.value
+        port.value = button.dataset.port || port.value
+        syncRaw()
+        scan(false)
+      })
+    }
+    for (const input of [host, port, query]) {
+      input.addEventListener('input', syncRaw)
+      input.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') scan(false)
+      })
+    }
+
+    syncRaw()
+    scan(qs.get('autogo') === '1')
+  </script>
+</body>
+</html>

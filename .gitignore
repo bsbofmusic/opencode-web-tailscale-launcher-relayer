@@ -1,6 +1,23 @@
-﻿launcher/dist/
-launcher/*.user
-launcher/*.suo
-logs/
+# Build artifacts
+dist/
+*.exe
+*.dll
+*.zip
+
+# Cache and logs
+.cache-wip/
 *.log
-oc-launcher.ini
+*.err
+
+# Temporary files
+.tmp-*
+IMPLEMENTATION_SUMMARY.md
+
+# IDE
+.opencode/
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

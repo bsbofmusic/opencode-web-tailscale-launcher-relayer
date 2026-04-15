@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenCode Session Gateway</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0a0f1a;
+      --panel: #101827;
+      --muted: #8da2c0;
+      --line: #22304a;
+      --text: #eef4ff;
+      --accent: #5aa2ff;
+      --accent-2: #1e3a5f;
+      --ok: #7ee787;
+      --warn: #f4b860;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at top, #12203a 0, var(--bg) 45%);
+      color: var(--text);
+      font: 14px/1.5 Inter, "Segoe UI", sans-serif;
+    }
+    main {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 32px 20px 48px;
+    }
+    .hero {
+      margin-bottom: 20px;
+    }
+    h1 {
+      margin: 0;
+      font-size: 30px;
+      line-height: 1.15;
+    }
+    .sub {
+      margin: 10px 0 0;
+      color: var(--muted);
+      max-width: 760px;
+    }
+    .panel {
+      background: rgba(16, 24, 39, 0.92);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 18px;
+      backdrop-filter: blur(10px);
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 1.1fr 110px 1.2fr;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    label {
+      display: block;
+      margin: 0 0 6px;
+      color: var(--muted);
+      font-size: 12px;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+    }
+    input {
+      width: 100%;
+      height: 46px;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: #08101d;
+      color: var(--text);
+      padding: 0 14px;
+      font-size: 15px;
+    }
+    .actions, .presets {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    button, a {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 10px 14px;
+      background: #0d1728;
+      color: var(--text);
+      text-decoration: none;
+      cursor: pointer;
+      font: inherit;
+    }
+    button.primary, a.primary {
+      background: linear-gradient(180deg, #3584ff, #2264d8);
+      border-color: #2c6fe0;
+    }
+    .presets { margin-top: 14px; }
+    .meta {
+      margin: 14px 0 0;
+      color: var(--muted);
+      min-height: 20px;
+    }
+    .list {
+      margin-top: 18px;
+      display: grid;
+      gap: 10px;
+    }
+    .item {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      align-items: center;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: rgba(7, 12, 22, 0.9);
+    }
+    .title {
+      font-size: 15px;
+      color: var(--text);
+      word-break: break-word;
+    }
+    .detail {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .badge {
+      display: inline-block;
+      margin-left: 8px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: rgba(126, 231, 135, 0.14);
+      color: var(--ok);
+      font-size: 11px;
+      vertical-align: middle;
+    }
+    .empty {
+      color: var(--warn);
+      padding: 14px;
+      border: 1px dashed var(--line);
+      border-radius: 14px;
+    }
+    code {
+      color: #c9dcff;
+      word-break: break-all;
+    }
+    @media (max-width: 720px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+      .item {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="hero">
+      <h1>OpenCode Session Gateway</h1>
+      <p class="sub">这个页面不依赖 OpenCode Web 的浏览器本地项目列表，直接从后端拉指定目录的历史 session。新浏览器首次打开也能直接进入旧会话。</p>
+    </section>
+
+    <section class="panel">
+      <div class="grid">
+        <div>
+          <label for="host">Target Host</label>
+          <input id="host" value="100.121.130.36" placeholder="100.121.130.36">
+        </div>
+        <div>
+          <label for="port">Port</label>
+          <input id="port" value="3000" placeholder="3000">
+        </div>
+        <div>
+          <label for="dir">Directory</label>
+          <input id="dir" value="D:\CODE" placeholder="D:\CODE">
+        </div>
+      </div>
+
+      <div class="actions">
+        <button id="load" class="primary" type="button">Load Sessions</button>
+        <button id="latest" type="button">Open Latest</button>
+        <button id="project" type="button">Open Directory</button>
+        <a id="raw" href="#">Raw OpenCode</a>
+      </div>
+
+      <div class="presets">
+        <button class="preset" data-dir="D:\CODE" type="button">D:\CODE</button>
+        <button class="preset" data-dir="D:\CODE\opencode-tailscale" type="button">D:\CODE\opencode-tailscale</button>
+      </div>
+
+      <div id="meta" class="meta"></div>
+      <div id="list" class="list"></div>
+    </section>
+  </main>
+
+  <script>
+    const hostInput = document.getElementById("host")
+    const portInput = document.getElementById("port")
+    const dirInput = document.getElementById("dir")
+    const meta = document.getElementById("meta")
+    const list = document.getElementById("list")
+    const raw = document.getElementById("raw")
+    const qs = new URLSearchParams(location.search)
+    const state = { sessions: [] }
+
+    const defaults = {
+      host: qs.get("host") || localStorage.getItem("oc-gateway-host") || "100.121.130.36",
+      port: qs.get("port") || localStorage.getItem("oc-gateway-port") || "3000",
+      dir: qs.get("dir") || localStorage.getItem("oc-gateway-dir") || "D:\\CODE",
+      autogo: qs.get("autogo") === "1",
+    }
+
+    hostInput.value = defaults.host
+    portInput.value = defaults.port
+    dirInput.value = defaults.dir
+
+    function encodeDir(value) {
+      return btoa(unescape(encodeURIComponent(value)))
+    }
+
+    function base() {
+      return `http://${hostInput.value.trim()}:${(portInput.value.trim() || "3000").replace(/\D/g, "") || "3000"}`
+    }
+
+    function dir() {
+      return dirInput.value.trim()
+    }
+
+    function syncRaw() {
+      raw.href = base()
+      raw.textContent = `Raw OpenCode: ${base()}`
+    }
+
+    function save() {
+      localStorage.setItem("oc-gateway-host", hostInput.value.trim())
+      localStorage.setItem("oc-gateway-port", portInput.value.trim() || "3000")
+      localStorage.setItem("oc-gateway-dir", dir())
+    }
+
+    function sessionHref(session) {
+      return `${base()}/${encodeDir(dir())}/session/${session.id}`
+    }
+
+    function projectHref() {
+      return `${base()}/${encodeDir(dir())}/session`
+    }
+
+    function formatTime(value) {
+      if (!value) return "unknown"
+      return new Date(value).toLocaleString()
+    }
+
+    function render(items) {
+      if (!items.length) {
+        list.innerHTML = `<div class="empty">没有找到该目录的 root sessions。你仍然可以先点 <code>Open Directory</code> 进入这个目录。</div>`
+        return
+      }
+
+      list.innerHTML = items.map((item, index) => {
+        const title = item.title || item.slug || item.id
+        const newest = index === 0 ? '<span class="badge">latest</span>' : ''
+        return `
+          <div class="item">
+            <div>
+              <div class="title">${escapeHtml(title)}${newest}</div>
+              <div class="detail">${escapeHtml(item.id)} | updated ${escapeHtml(formatTime(item.time && (item.time.updated || item.time.created)))}</div>
+            </div>
+            <div class="actions">
+              <a class="primary" href="${sessionHref(item)}">Open Session</a>
+            </div>
+          </div>
+        `
+      }).join("")
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;")
+    }
+
+    async function load(openLatest) {
+      save()
+      syncRaw()
+      meta.textContent = "Loading sessions..."
+      list.innerHTML = ""
+
+      const url = new URL(`${location.origin}/api/sessions`)
+      url.searchParams.set("host", hostInput.value.trim())
+      url.searchParams.set("port", portInput.value.trim() || "3000")
+      url.searchParams.set("dir", dir())
+      url.searchParams.set("limit", "60")
+
+      try {
+        const response = await fetch(url)
+        const data = await response.json()
+        if (!response.ok) {
+          throw new Error(data.error || `Request failed: ${response.status}`)
+        }
+
+        state.sessions = data.sessions || []
+        meta.innerHTML = `Target <code>${escapeHtml(hostInput.value.trim() + ":" + (portInput.value.trim() || "3000"))}</code> | Directory <code>${escapeHtml(dir())}</code> | ${state.sessions.length} sessions`
+        render(state.sessions)
+
+        if (openLatest && state.sessions[0]) {
+          location.href = sessionHref(state.sessions[0])
+        }
+      } catch (error) {
+        meta.textContent = error.message || String(error)
+        list.innerHTML = ""
+      }
+    }
+
+    document.getElementById("load").addEventListener("click", () => load(false))
+    document.getElementById("latest").addEventListener("click", () => load(true))
+    document.getElementById("project").addEventListener("click", () => {
+      save()
+      location.href = projectHref()
+    })
+
+    for (const button of document.querySelectorAll(".preset")) {
+      button.addEventListener("click", () => {
+        dirInput.value = button.dataset.dir || dirInput.value
+        load(false)
+      })
+    }
+
+    for (const input of [hostInput, portInput, dirInput]) {
+      input.addEventListener("input", syncRaw)
+      input.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") load(false)
+      })
+    }
+
+    syncRaw()
+    load(defaults.autogo)
+  </script>
+</body>
+</html>
