@@ -112,6 +112,21 @@ function healthPayload(states) {
     state.admission = targetAdmission(state)
     const staleClients = [...state.clients.values()].filter((client) => client.syncState === "stale").length
     const protectedClients = [...state.clients.values()].filter((client) => syncAction(state, client) === "defer").length
+    const trackedAll = [...state.clients.values()]
+      .map((client) => client.view || (client.activeSessionID && client.activeDirectory ? { sessionID: client.activeSessionID, directory: client.activeDirectory } : null))
+      .filter(Boolean)
+    const tracked = trackedAll
+      .slice(0, 5)
+      .map((view) => ({ sessionID: view.sessionID, directory: view.directory }))
+    const messageEntries = [...state.messages.values()]
+    const bySource = messageEntries.reduce((acc, entry) => {
+      const key = String(entry?.source || "unknown")
+      acc[key] = (acc[key] || 0) + 1
+      return acc
+    }, {})
+    const oldestMessageAgeMs = messageEntries.length
+      ? Math.max(...messageEntries.map((entry) => entry?.at ? Math.max(0, Date.now() - entry.at) : 0))
+      : 0
     return {
       target: state.target,
       targetType: state.targetType,
@@ -145,6 +160,14 @@ function healthPayload(states) {
       protectedClients,
       warmStage: state.promise ? "connect" : "ready",
       stats: state.stats,
+      debug: {
+        trackedSessionsCount: trackedAll.length,
+        trackedSessionsSample: tracked,
+        messageEntries: messageEntries.length,
+        messageEntriesBySource: bySource,
+        oldestMessageAgeMs,
+        diskMessageEntries: bySource.disk || 0,
+      },
       lastReason: state.lastReason,
       lastReasonClient: state.lastReasonClient,
       lastError: state.lastError,

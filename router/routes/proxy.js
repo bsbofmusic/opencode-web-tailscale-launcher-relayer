@@ -202,6 +202,14 @@ function proxyRequest(ctx, req, res) {
       const limit = Number(reqUrl.searchParams.get("limit") || "0")
       const reason = msg && dir && !reqUrl.searchParams.has("cursor") && !reqUrl.searchParams.has("before") ? messageBypassReason(state, client, dir, decodeURIComponent(msg[1]), limit) : null
       Object.assign(headers, relayHeaders(priority, "proxy", reason || "proxy-pass", reason ? "bypass" : undefined))
+      if (msg && dir && !reqUrl.searchParams.has("cursor") && !reqUrl.searchParams.has("before")) {
+        const sessionID = decodeURIComponent(msg[1])
+        headers["X-OC-Message-Cache"] = reason ? "bypass" : "miss"
+        headers["X-OC-Message-Requested-Session"] = sessionID
+        headers["X-OC-Message-Active-Session"] = client?.activeSessionID || ""
+        headers["X-OC-Message-View-Session"] = client?.view?.sessionID || ""
+        headers["X-OC-Message-Latest-Session"] = state.meta?.sessions?.latest?.id || ""
+      }
       delete headers["content-security-policy"]
       delete headers["content-security-policy-report-only"]
       const location = rewriteLocation(headers.location, { headersHost: req.headers.host, searchParams: reqUrl.searchParams }, target)
@@ -235,7 +243,15 @@ function proxyRequest(ctx, req, res) {
         if (ok && msg) {
           const sessionID = decodeURIComponent(msg[1])
           state.messages.set(cacheKey(dir, sessionID, limit), {
-            body, type: String(headers["content-type"] || "application/json"), status, at: now(), sessionID, directory: dir, limit,
+            body,
+            type: String(headers["content-type"] || "application/json"),
+            status,
+            at: now(),
+            sessionID,
+            directory: dir,
+            limit,
+            source: "proxy",
+            sourceAt: now(),
           })
         }
         if (ok && promptRequest) {

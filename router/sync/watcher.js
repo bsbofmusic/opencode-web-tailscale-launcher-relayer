@@ -71,6 +71,8 @@ async function tickWatcher(state, config) {
         body: next.text,
         type: "application/json",
         at: Date.now(),
+        source: "watcher",
+        sourceAt: Date.now(),
       })
       emitTargetEvent(state.target, "message-appended", {
         sessionID: entry.sessionID,

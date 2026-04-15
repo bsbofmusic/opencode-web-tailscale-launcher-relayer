@@ -75,7 +75,15 @@ function hydrateStateFromDisk(state, config) {
   state.sessionList = Array.isArray(cached.sessionList) ? cached.sessionList : []
   state.workspaceSessions = new Map(Array.isArray(cached.workspaceSessions) ? cached.workspaceSessions : [])
   state.lists = new Map(Array.isArray(cached.lists) ? cached.lists : [])
-  state.messages = new Map(Array.isArray(cached.messages) ? cached.messages : [])
+  state.messages = new Map((Array.isArray(cached.messages) ? cached.messages : []).map(([key, entry]) => {
+    if (!entry || typeof entry !== "object") return [key, entry]
+    return [key, {
+      ...entry,
+      source: entry.source || "disk",
+      restoredAt: now(),
+      restoredFromSavedAt: cached.savedAt || 0,
+    }]
+  }))
   state.details = new Map(Array.isArray(cached.details) ? cached.details : [])
   state.projects = new Map(Array.isArray(cached.projects) ? cached.projects : [])
   state.bootstrap = new Map(Array.isArray(cached.bootstrap) ? cached.bootstrap : [])

@@ -47,6 +47,16 @@ function maybeServeCached(ctx, req, res) {
   const { state, client, reqUrl, config } = ctx
   if (!state || !client) return false
   const snapshotCacheMs = config.snapshotCacheMs || 45000
+  const authoritySnapshot = (sessionID, directory) => ({
+    requestedSessionID: sessionID || "",
+    requestedDirectory: directory || "",
+    activeSessionID: client?.activeSessionID || "",
+    activeDirectory: client?.activeDirectory || "",
+    viewSessionID: client?.view?.sessionID || "",
+    viewDirectory: client?.view?.directory || "",
+    latestSessionID: state.meta?.sessions?.latest?.id || "",
+    latestDirectory: state.meta?.sessions?.latest?.directory || "",
+  })
   const cacheHeaders = (priority) => ({
     ...relayHeaders(priority, "cache", "cache-hit", "hit"),
     ...(state.offline ? { "X-OC-Offline": "true" } : {}),
@@ -143,7 +153,8 @@ function maybeServeCached(ctx, req, res) {
     const sessionID = decodeURIComponent(match[1])
     const limit = Number(reqUrl.searchParams.get("limit") || "0")
     const hit = state.messages.get(cacheKey(directory, sessionID, limit))
-    if (messageBypass(state, client, directory, sessionID, limit)) {
+    const bypass = messageBypass(state, client, directory, sessionID, limit)
+    if (bypass) {
       state.stats.cacheBypass += 1
       clearLastReason(state, client)
       return false
@@ -155,7 +166,19 @@ function maybeServeCached(ctx, req, res) {
     state.stats.cacheHit += 1
     clearLastReason(state, client)
     if (!fresh(hit.at, snapshotCacheMs)) refresh(state, client, config)
-    raw(res, hit.status || 200, hit.body, hit.type, cacheHeaders(priority))
+    const ageMs = hit?.at ? Math.max(0, Date.now() - hit.at) : -1
+    const authority = authoritySnapshot(sessionID, directory)
+    raw(res, hit.status || 200, hit.body, hit.type, {
+      ...cacheHeaders(priority),
+      "X-OC-Message-Cache": "hit",
+      "X-OC-Message-Cache-Age": String(ageMs),
+      "X-OC-Message-Cache-Source": String(hit?.source || "memory"),
+      "X-OC-Message-Cache-Source-At": String(hit?.sourceAt || hit?.restoredAt || hit?.at || 0),
+      "X-OC-Message-Requested-Session": authority.requestedSessionID,
+      "X-OC-Message-Active-Session": authority.activeSessionID,
+      "X-OC-Message-View-Session": authority.viewSessionID,
+      "X-OC-Message-Latest-Session": authority.latestSessionID,
+    })
     return true
   }
 

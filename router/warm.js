@@ -398,6 +398,8 @@ async function cacheMessages(state, target, directory, sessionID, limit, config)
     sessionID,
     directory,
     limit,
+    source: "warm",
+    sourceAt: now(),
   })
   saveStateCache(state, config)
 }
