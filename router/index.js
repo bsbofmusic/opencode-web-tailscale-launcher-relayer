@@ -13,6 +13,12 @@ function envFlag(name, fallback) {
   return !["0", "false", "False", "FALSE", "off", "OFF"].includes(String(value))
 }
 
+function envFlag(name, fallback) {
+  const value = process.env[name]
+  if (value === undefined) return fallback
+  return !["0", "false", "False", "FALSE", "off", "OFF"].includes(String(value))
+}
+
 function createRouter(options) {
   const opts = options || {}
   const bindHost = opts.host || process.env.OPENCODE_ROUTER_HOST || "127.0.0.1"
@@ -52,17 +58,8 @@ function createRouter(options) {
       .split(",")
       .map((item) => item.trim())
       .filter(Boolean),
-    enableSyncRuntime: envFlag("OPENCODE_ROUTER_ENABLE_SYNC_RUNTIME", true),
-    enableBrowserBootstrap: envFlag("OPENCODE_ROUTER_ENABLE_BROWSER_BOOTSTRAP", true),
-    enableAutoSoftRefresh: envFlag("OPENCODE_ROUTER_ENABLE_AUTO_SOFT_REFRESH", true),
-    enableAutoReenter: envFlag("OPENCODE_ROUTER_ENABLE_AUTO_REENTER", true),
-    enableProgressQueryOverride: envFlag("OPENCODE_ROUTER_ENABLE_PROGRESS_QUERY_OVERRIDE", true),
+    enableProgressQueryOverride: envFlag("OPENCODE_ROUTER_ENABLE_PROGRESS_QUERY_OVERRIDE", false),
     healthzDebug: envFlag("OPENCODE_ROUTER_HEALTHZ_DEBUG", false),
-    enableProjectRewrite: envFlag("OPENCODE_ROUTER_ENABLE_PROJECT_REWRITE", true),
-    enableSyntheticProjects: envFlag("OPENCODE_ROUTER_ENABLE_SYNTHETIC_PROJECTS", true),
-    injectMode: String(process.env.OPENCODE_ROUTER_INJECT_MODE || "legacy-strip-csp"),
-    cacheMode: String(process.env.OPENCODE_ROUTER_CACHE_MODE || (process.env.OPENCODE_ROUTER_CACHE_DIR ? "disk" : "memory-only")),
-    enableDiskHydrate: envFlag("OPENCODE_ROUTER_ENABLE_DISK_HYDRATE", Boolean(process.env.OPENCODE_ROUTER_CACHE_DIR)),
     ...opts.config,
   }
 

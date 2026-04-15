@@ -28,9 +28,7 @@ Tailscale 隧道（加密打洞）
 局域网 OpenCode（:3000）
 ```
 
-Relayer 只负责一件事：接收浏览器请求 → 转发给 Tailscale → 返回结果给浏览器。
-
-注意：为了保持网页可用性，relayer 会做**有限的缓存、兼容重写、浏览器 bootstrap、HTML runtime 注入**，但仍然不修改 upstream OpenCode 源码本身。
+Relayer 只负责一件事：接收浏览器请求 → 转发给 Tailscale → 返回结果给浏览器。中间不存数据、不改请求。
 
 ---
 
@@ -64,7 +62,6 @@ node router/vps-opencode-router.js
 完整部署步骤见：
 
 - `docs/DEPLOY_VPS.md`
-- `docs/QUICK_DEPLOY_CHECKLIST.md`
 
 ### Launcher ↔ Relayer 最小契约
 
@@ -82,26 +79,6 @@ node router/vps-opencode-router.js
 ---
 
 ## 升级记录
-
-### v0.1.10（计划中）— 高风险能力收口与可回退发布
-
-**这次要解决什么：**
-- 高风险行为不可关、不可灰度、不可一键回退
-- `/__oc/healthz` 默认暴露过多内部调试信息
-- `/__oc/progress` 仍带 query override 写状态能力
-- `warm.js` 对坏 JSON 缺少局部隔离
-
-**这次怎么做：**
-
-1. 把高风险行为统一挂到 relayer config / env flags
-2. 默认收紧 `/__oc/healthz`，debug 按需开启
-3. `progress` override 改成显式可关
-4. `warm.js` 对坏 JSON 做局部隔离，不让单次坏响应放大全局故障
-5. 补一份可回退的发布与运维说明
-
-详细发布说明：
-
-- `docs/RELEASE-v0.1.10-plan.md`
 
 ### v0.1.8（2026-04-15）— message body 稳定性止血版
 
@@ -209,7 +186,7 @@ node router/vps-opencode-router.js
 ## 注意事项
 
 - **不修改 OpenCode 源码**，只做网络转发
-- Relayer 不是严格“无状态”代理：它会保留有限的 memory/disk/browser 辅助状态，但这些状态不应被视为 upstream authority
+- Relayer 无状态，重启不丢用户 session（session 保存在 OpenCode 自身）
 - Launcher 和 Relayer 独立运行，可以只跑其中一个
 - Launcher 源码与 exe 发布已迁移到独立仓库
 

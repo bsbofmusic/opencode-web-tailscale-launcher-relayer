@@ -167,10 +167,8 @@ function resolveWorkspaceRoot(projects, directory) {
 function buildWorkspaceRoots(inventory, sessionList, extraRoots) {
   const seen = new Set()
   const roots = []
-  const win = windowsHint(sessionList, extraRoots)
   const add = (directory) => {
     const key = dirKey(directory)
-    if (win && (directory === "/" || directory === "\\")) return
     if (!directory || seen.has(key)) return
     seen.add(key)
     roots.push(directory)
@@ -179,23 +177,6 @@ function buildWorkspaceRoots(inventory, sessionList, extraRoots) {
   for (const row of Array.isArray(sessionList) ? sessionList : []) add(resolveWorkspaceRoot(inventory, row?.directory))
   for (const dir of Array.isArray(extraRoots) ? extraRoots : []) add(dir)
   return roots
-}
-
-function windowsHint(sessionList, extraRoots) {
-  const list = [
-    ...(Array.isArray(sessionList) ? sessionList.map((row) => row?.directory) : []),
-    ...(Array.isArray(extraRoots) ? extraRoots : []),
-  ]
-  return list.some((value) => /^[A-Za-z]:[\\/]/.test(String(value || "")))
-}
-
-function normalizeProjects(projects, sessionList, extraRoots) {
-  const list = Array.isArray(projects) ? projects.slice() : []
-  if (!windowsHint(sessionList, extraRoots)) return list
-  return list.filter((item) => {
-    const dir = String(item?.worktree || "")
-    return dir !== "/" && dir !== "\\"
-  })
 }
 
 function projectInventory(projects, roots) {
@@ -259,7 +240,7 @@ function latestByRoot(roots, projects, workspaceSessions, fallbackList) {
 
 function buildMeta(target, health, list, projects, workspaceSessions, latencyMs, config) {
   const cfg = config || defaults
-  const raw = normalizeProjects(projects, list, cfg.extraRoots)
+  const raw = Array.isArray(projects) ? projects : []
   const realInventory = raw.filter((item) => item && !String(item.id || "").startsWith("relay:"))
   const roots = buildWorkspaceRoots(realInventory, list, cfg.extraRoots)
   const inventory = projectInventory(realInventory, roots)
@@ -323,7 +304,7 @@ function metaEnvelope(state) {
     cache: { source: "router", cachedAt: now(), warm: false },
   }
   const fallbackRoots = base.sessions?.directories || []
-  const raw = normalizeProjects(state.inventory, state.sessionList, state.config?.extraRoots)
+  const raw = Array.isArray(state.inventory) ? state.inventory : []
   const realInventory = raw.filter((item) => item && !String(item.id || "").startsWith("relay:"))
   const built = buildWorkspaceRoots(realInventory, state.sessionList, state.config?.extraRoots)
   const roots = built.length ? built : fallbackRoots
@@ -688,7 +669,7 @@ async function warm(state, client, force, options, config) {
     let inventory = []
     try {
       const projects = await fetchJsonWith(target, "/project", { state }, config)
-      inventory = normalizeProjects(projects.data, sessions?.data, cfg.extraRoots)
+      inventory = Array.isArray(projects.data) ? projects.data : []
     } catch (err) {
       if (!invalidJson(err)) throw err
       inventory = []
@@ -814,5 +795,4 @@ module.exports = {
   warm,
   refresh,
   invalidJson,
-  normalizeProjects,
 }
