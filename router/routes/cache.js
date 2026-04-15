@@ -152,6 +152,11 @@ function maybeServeCached(ctx, req, res) {
   if (match && directory && !reqUrl.searchParams.has("cursor") && !reqUrl.searchParams.has("before")) {
     const sessionID = decodeURIComponent(match[1])
     const limit = Number(reqUrl.searchParams.get("limit") || "0")
+    if (limit === 80) {
+      state.stats.cacheBypass += 1
+      clearLastReason(state, client)
+      return false
+    }
     const hit = state.messages.get(cacheKey(directory, sessionID, limit))
     const bypass = messageBypass(state, client, directory, sessionID, limit)
     if (bypass) {
@@ -163,9 +168,13 @@ function maybeServeCached(ctx, req, res) {
       state.stats.cacheMiss += 1
       return false
     }
+    if (!fresh(hit.at, snapshotCacheMs)) {
+      state.stats.cacheMiss += 1
+      refresh(state, client, config)
+      return false
+    }
     state.stats.cacheHit += 1
     clearLastReason(state, client)
-    if (!fresh(hit.at, snapshotCacheMs)) refresh(state, client, config)
     const ageMs = hit?.at ? Math.max(0, Date.now() - hit.at) : -1
     const authority = authoritySnapshot(sessionID, directory)
     raw(res, hit.status || 200, hit.body, hit.type, {

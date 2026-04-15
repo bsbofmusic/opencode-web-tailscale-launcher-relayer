@@ -25,7 +25,9 @@ function snapshotState(state) {
     sessionList: state.sessionList,
     workspaceSessions: [...state.workspaceSessions.entries()],
     lists: [...state.lists.entries()],
-    messages: [...state.messages.entries()],
+    // v0.1.8: message body is not persisted across restarts.
+    // Old message snapshots caused ancient conversations to revive after hydrate.
+    messages: [],
     details: [...state.details.entries()],
     projects: [...state.projects.entries()],
     bootstrap: [...state.bootstrap.entries()],
@@ -75,15 +77,9 @@ function hydrateStateFromDisk(state, config) {
   state.sessionList = Array.isArray(cached.sessionList) ? cached.sessionList : []
   state.workspaceSessions = new Map(Array.isArray(cached.workspaceSessions) ? cached.workspaceSessions : [])
   state.lists = new Map(Array.isArray(cached.lists) ? cached.lists : [])
-  state.messages = new Map((Array.isArray(cached.messages) ? cached.messages : []).map(([key, entry]) => {
-    if (!entry || typeof entry !== "object") return [key, entry]
-    return [key, {
-      ...entry,
-      source: entry.source || "disk",
-      restoredAt: now(),
-      restoredFromSavedAt: cached.savedAt || 0,
-    }]
-  }))
+  // v0.1.8: do not hydrate message bodies from disk.
+  // Message content must come from upstream/live memory, not old persisted snapshots.
+  state.messages = new Map()
   state.details = new Map(Array.isArray(cached.details) ? cached.details : [])
   state.projects = new Map(Array.isArray(cached.projects) ? cached.projects : [])
   state.bootstrap = new Map(Array.isArray(cached.bootstrap) ? cached.bootstrap : [])
