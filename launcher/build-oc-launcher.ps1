@@ -8,7 +8,7 @@ $csc = 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 $source = Join-Path $PSScriptRoot 'OpenCodeTailnetLauncher.cs'
 $icon = Join-Path $PSScriptRoot 'OpenCodeTailnetLauncher.ico'
 $target = Join-Path $OutputDir 'OpenCodeTailnetLauncher.exe'
-$release = 'v0.0.12'
+$release = 'v0.0.1'
 $zip = Join-Path $OutputDir ("OpenCodeTailnetLauncher-" + $release + "-single.zip")
 
 if (-not (Test-Path $csc)) {

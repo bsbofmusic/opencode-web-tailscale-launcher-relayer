@@ -56,7 +56,7 @@ namespace OpenCodeTailnetLauncher
     internal sealed class TrayApp : ApplicationContext
     {
         private const string AppName = "OpenCode Tailnet Launcher";
-        private const string AppVersion = "v0.1.1";
+        private const string AppVersion = "v0.0.1";
         private readonly NotifyIcon tray;
         private readonly Timer timer;
         private readonly ToolStripMenuItem stateItem;

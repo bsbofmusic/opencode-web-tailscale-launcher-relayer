@@ -1,4 +1,4 @@
-# OpenCode Tailnet Launcher & Relayer
+# OpenCode Tailnet Relayer
 
 > 把局域网里的 OpenCode 网页转发到公网浏览器，零魔改、体验和原生一样。
 
@@ -6,11 +6,13 @@
 
 ## 一句话说明
 
-这个工具让你在任何地方用浏览器打开 OpenCode 网页版，体验和在本机打开一模一样——包括工作区切换、session 保持、编排模式。
+这是 **Relayer 主仓**。
 
-**两件事：**
-- **Launcher**（Windows 小工具）：常驻系统托盘，保持 OpenCode 在线
-- **Relayer**（VPS 服务）：把浏览器请求转发到你的局域网 OpenCode，不改 OpenCode 源码
+它负责把浏览器请求转发到你的局域网 OpenCode，让你通过公网浏览器使用 OpenCode Web。
+
+**Launcher 已迁移到独立仓库：**
+- `https://github.com/bsbofmusic/opencode-tailnet-launcher-windows`
+- Windows 发布物：`OpenCodeTailnetLauncher.exe`
 
 ---
 
@@ -26,19 +28,24 @@ Tailscale 隧道（加密打洞）
 局域网 OpenCode（:3000）
 ```
 
-Launcher 只负责一件事：让 Tailscale 隧道保持活跃，不掉线。
-
 Relayer 只负责一件事：接收浏览器请求 → 转发给 Tailscale → 返回结果给浏览器。中间不存数据、不改请求。
 
 ---
 
 ## 快速开始
 
-### 1. Launcher（Windows）
+### 1. Launcher（Windows，独立仓库）
 
-下载 `opencode-tailnet-launcher.html`，双击打开，配置 Tailscale auth key，保存运行。
+请前往独立仓库下载：
 
-### 2. Relayer（VPS / Linux）
+- `https://github.com/bsbofmusic/opencode-tailnet-launcher-windows`
+
+Windows 发布物：
+
+- `OpenCodeTailnetLauncher.exe`
+- `OpenCodeTailnetLauncher-v0.0.1-single.zip`
+
+### 2. Relayer（VPS / Linux，本仓库）
 
 ```bash
 # 安装依赖
@@ -127,10 +134,10 @@ node vps-opencode-router.js
 - VPS 部署 relayer + Tailscale 代理
 - Session 保持、Warm 缓存、后台 watcher
 
-### v0.1.1 — Launcher 初始版
-- Windows 系统托盘小工具
-- Tailscale auth key 管理
-- 网络变化自动重连
+### Launcher release line
+- Launcher 已迁移到独立仓库维护
+- 当前独立 launcher 基线版本：`v0.0.1`
+- 下载地址：`https://github.com/bsbofmusic/opencode-tailnet-launcher-windows/releases/tag/v0.0.1`
 
 ---
 
@@ -139,6 +146,7 @@ node vps-opencode-router.js
 - **不修改 OpenCode 源码**，只做网络转发
 - Relayer 无状态，重启不丢用户 session（session 保存在 OpenCode 自身）
 - Launcher 和 Relayer 独立运行，可以只跑其中一个
+- Launcher 源码与 exe 发布已迁移到独立仓库
 
 ---
 
@@ -152,7 +160,6 @@ opencode-tailscale/
 │   ├── pages.js               浏览器端注入脚本
 │   ├── state.js               状态同步逻辑
 │   └── warm.js                冷启动加速
-├── launcher/                  ← Launcher 源码（C#，预发布）
 ├── vps-opencode-router.js     ← Relayer 入口
 └── opencode-router.service    ← VPS systemd 配置
 ```
