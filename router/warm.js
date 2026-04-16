@@ -2,7 +2,7 @@
 
 const http = require("http")
 const { now, fresh, classifyError, cacheKey, dirKey } = require("./util")
-const { setWarm, warmBusy, setLastReason, backgroundWarmPaused, clientSafeMode, touchState, targetAdmission } = require("./state")
+const { setWarm, warmBusy, setLastReason, backgroundWarmPaused, clientSafeMode, touchState, targetAdmission, schedulerOverloaded, setSchedulerMode } = require("./state")
 const { runHeavy, enqueueBackground } = require("./heavy")
 const { saveStateCache } = require("./sync/disk-cache")
 
@@ -700,6 +700,8 @@ async function warm(state, client, force, options, config) {
       state.availabilityAt = now()
     }
     saveStateCache(state, config)
+    const overload = schedulerOverloaded(state, cfg)
+    setSchedulerMode(state, overload ? "overload" : (state.schedulerMode === "overload" ? "recovering" : state.schedulerMode), overload ? "warm-backlog" : null)
     if (fastMetaReady) {
       const latestSession = fastMeta.sessions.latest
       const nearby = discoveryList
@@ -714,7 +716,7 @@ async function warm(state, client, force, options, config) {
             : "Latest session is ready. Opening now...",
         cachedAt: now(), latestSessionID: latestSession?.id, latestDirectory: latestSession?.directory, error: null,
       })
-      scheduleSnapshotWarm(state, client, target, latestSession, nearby, config)
+      if (!overload) scheduleSnapshotWarm(state, client, target, latestSession, nearby, config)
       state.meta.cache = { source: "router", cachedAt: now(), warm: true }
     } else {
       setWarm(client, {
@@ -725,7 +727,7 @@ async function warm(state, client, force, options, config) {
     saveStateCache(state, config)
 
     // BACKGROUND: fill workspaceSessions for all roots — does NOT block the fast return
-    void fetchAllWorkspaceRoots(state, target, cfg).then(() => {
+    if (!overload) void fetchAllWorkspaceRoots(state, target, cfg).then(() => {
       // after background workspace roots load, rebuild sessionIndex and meta with full workspaceSessions
       if (!state.meta?.ready) return
       const fullRoots = buildWorkspaceRoots(fastInventory, discoveryList, cfg.extraRoots)

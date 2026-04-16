@@ -10,6 +10,8 @@ const defaults = {
   cleanupIntervalMs: 5 * 60 * 1000,
   idleRecoveryThresholdMs: 300000,
   idleRecoveryWindowMs: 30000,
+  watcherTrackClientMs: 120000,
+  watcherTrackClientMsOverload: 90000,
 }
 
 function emptyHead() {
@@ -60,6 +62,11 @@ function createState(target) {
     backgroundActive: 0,
     backgroundQueue: [],
     backgroundKeys: new Set(),
+    schedulerMode: "normal",
+    overloadSince: 0,
+    recoveringSince: 0,
+    lastOverloadReason: null,
+    lastRootsRefreshAt: 0,
     ptyActive: 0,
     offline: false,
     offlineReason: null,
@@ -75,6 +82,9 @@ function createState(target) {
       upstreamFetch: 0,
       heavyQueued: 0,
       backgroundQueued: 0,
+      droppedBackgroundJobs: 0,
+      expiredBackgroundJobs: 0,
+      prunedClients: 0,
     },
     lastError: null,
     lastReason: null,
@@ -238,6 +248,46 @@ function touchClient(state, client, config) {
   client.lastAccessAt = stamp
 }
 
+function pruneStaleClients(state, ttlMs) {
+  const threshold = now() - ttlMs
+  let removed = 0
+  for (const [id, client] of state.clients.entries()) {
+    if ((client.lastAccessAt || 0) >= threshold) continue
+    if (id === sharedClientID) continue
+    state.clients.delete(id)
+    removed += 1
+  }
+  if (removed) state.stats.prunedClients += removed
+  return removed
+}
+
+function schedulerOverloaded(state, config) {
+  const cfg = config || defaults
+  const soft = Number(cfg.backgroundSoftLimit || 12)
+  const heavySoft = Number(cfg.heavyBackgroundSoftLimit || 4)
+  const oldPromise = Boolean(state.promiseStartedAt && now() - state.promiseStartedAt >= Number(cfg.promiseAgeSoftLimitMs || 10000))
+  return state.backgroundQueue.length >= soft || state.heavyBackgroundQueue.length >= heavySoft || oldPromise
+}
+
+function setSchedulerMode(state, mode, reason) {
+  if (state.schedulerMode === mode) return
+  state.schedulerMode = mode
+  if (mode === "overload") {
+    state.overloadSince = now()
+    state.recoveringSince = 0
+    state.lastOverloadReason = reason || null
+    return
+  }
+  if (mode === "recovering") {
+    state.recoveringSince = now()
+    state.lastOverloadReason = reason || state.lastOverloadReason
+    return
+  }
+  state.overloadSince = 0
+  state.recoveringSince = 0
+  state.lastOverloadReason = null
+}
+
 function clientSafeMode(client) {
   return Boolean(client.resumeSafeUntil && client.resumeSafeUntil > now())
 }
@@ -348,6 +398,28 @@ function cleanupStates(states, force, config) {
   }
 }
 
+function selfHealState(state, config) {
+  const cfg = config || defaults
+  const overloadMs = Number(cfg.watchdogOverloadMs || 60000)
+  if (state.schedulerMode !== "overload") return false
+  if (!state.overloadSince || now() - state.overloadSince < overloadMs) return false
+  const dropped = state.backgroundQueue.length + state.heavyBackgroundQueue.length
+  if (dropped > 0) {
+    state.stats.droppedBackgroundJobs += state.backgroundQueue.length
+    state.backgroundQueue = []
+    state.backgroundKeys.clear()
+    state.heavyBackgroundQueue = []
+  }
+  setSchedulerMode(state, "recovering", "watchdog-drain")
+  return dropped > 0
+}
+
+function selfHealStates(states, config) {
+  for (const state of states.values()) {
+    selfHealState(state, config)
+  }
+}
+
 function setWarm(client, patch) {
   client.warm = { ...client.warm, ...patch }
 }
@@ -421,6 +493,8 @@ module.exports = {
   ensureClientState,
   ensureState,
   cleanupStates,
+  selfHealState,
+  selfHealStates,
   setWarm,
   setClientView,
   messageHead,
@@ -429,6 +503,9 @@ module.exports = {
   syncAction,
   targetAdmission,
   syncClientView,
+  pruneStaleClients,
+  schedulerOverloaded,
+  setSchedulerMode,
   warmBusy,
   setLastReason,
   clearLastReason,

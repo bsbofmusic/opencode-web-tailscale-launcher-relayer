@@ -1,6 +1,6 @@
 "use strict"
 
-const { backgroundWarmPaused, setLastReason } = require("./state")
+const { backgroundWarmPaused, setLastReason, schedulerOverloaded } = require("./state")
 const { classifyError } = require("./util")
 
 const defaults = {
@@ -53,6 +53,14 @@ function runHeavy(state, work, priority, maxHeavy, maxBackgroundHeavy) {
 function pumpBackground(state) {
   if (state.heavyActive || state.backgroundActive) return
   if (backgroundWarmPaused(state)) return
+  if (schedulerOverloaded(state, state.config)) return
+  const ttl = Number(state.config?.backgroundJobTTLMs || 45000)
+  const now = Date.now()
+  while (state.backgroundQueue.length && now - (state.backgroundQueue[0].enqueuedAt || now) > ttl) {
+    const dropped = state.backgroundQueue.shift()
+    state.backgroundKeys.delete(dropped.key)
+    state.stats.expiredBackgroundJobs += 1
+  }
   const next = state.backgroundQueue.shift()
   if (!next) return
   state.backgroundActive += 1
@@ -75,9 +83,18 @@ function pumpBackground(state) {
 
 function enqueueBackground(state, key, work) {
   if (state.backgroundKeys.has(key)) return false
+  if (schedulerOverloaded(state, state.config)) {
+    state.stats.droppedBackgroundJobs += 1
+    return false
+  }
+  const maxQueue = Number(state.config?.maxBackgroundQueue || 20)
+  if (state.backgroundQueue.length >= maxQueue) {
+    state.stats.droppedBackgroundJobs += 1
+    return false
+  }
   state.stats.backgroundQueued += 1
   state.backgroundKeys.add(key)
-  state.backgroundQueue.push({ key, run: work })
+  state.backgroundQueue.push({ key, run: work, enqueuedAt: Date.now() })
   pumpBackground(state)
   return true
 }

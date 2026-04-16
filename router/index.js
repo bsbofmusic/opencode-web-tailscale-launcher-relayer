@@ -43,6 +43,16 @@ function createRouter(options) {
     idleRecoveryWindowMs: Number(process.env.OPENCODE_ROUTER_IDLE_RECOVERY_WINDOW_MS || "30000"),
     recoveryRetryMs: Number(process.env.OPENCODE_ROUTER_RECOVERY_RETRY_MS || "1500"),
     recoveryHtmlTimeoutMs: Number(process.env.OPENCODE_ROUTER_RECOVERY_HTML_TIMEOUT_MS || "15000"),
+    backgroundSoftLimit: Number(process.env.OPENCODE_ROUTER_BACKGROUND_SOFT_LIMIT || "12"),
+    maxBackgroundQueue: Number(process.env.OPENCODE_ROUTER_MAX_BACKGROUND_QUEUE || "20"),
+    backgroundJobTTLMs: Number(process.env.OPENCODE_ROUTER_BACKGROUND_JOB_TTL_MS || "45000"),
+    heavyBackgroundSoftLimit: Number(process.env.OPENCODE_ROUTER_HEAVY_BACKGROUND_SOFT_LIMIT || "4"),
+    promiseAgeSoftLimitMs: Number(process.env.OPENCODE_ROUTER_PROMISE_AGE_SOFT_LIMIT_MS || "10000"),
+    watcherSessionBudget: Number(process.env.OPENCODE_ROUTER_WATCHER_SESSION_BUDGET || "4"),
+    watcherSessionBudgetOverload: Number(process.env.OPENCODE_ROUTER_WATCHER_SESSION_BUDGET_OVERLOAD || "1"),
+    rootsRefreshTtlMs: Number(process.env.OPENCODE_ROUTER_ROOTS_REFRESH_TTL_MS || "300000"),
+    watchdogIntervalMs: Number(process.env.OPENCODE_ROUTER_WATCHDOG_INTERVAL_MS || "15000"),
+    watchdogOverloadMs: Number(process.env.OPENCODE_ROUTER_WATCHDOG_OVERLOAD_MS || "60000"),
     assetCacheMs: Number(process.env.OPENCODE_ROUTER_ASSET_CACHE_MS || String(24 * 60 * 60 * 1000)),
     launcherHosts: String(process.env.OPENCODE_ROUTER_LAUNCHER_HOSTS || "")
       .split(",")
@@ -76,7 +86,11 @@ function createRouter(options) {
     proxyUpgrade(req, socket, head, target, reqUrl, state, config)
   })
 
-  const cleanupTimer = setInterval(() => cleanupStates(states, false, config), config.cleanupIntervalMs)
+  const cleanupTimer = setInterval(() => {
+    cleanupStates(states, false, config)
+    const { selfHealStates } = require("./state")
+    selfHealStates(states, config)
+  }, Math.min(config.cleanupIntervalMs, config.watchdogIntervalMs))
   cleanupTimer.unref?.()
 
   server.listen(bindPort, bindHost, () => {

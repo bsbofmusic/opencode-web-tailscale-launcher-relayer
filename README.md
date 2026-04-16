@@ -80,6 +80,49 @@ node router/vps-opencode-router.js
 
 ## 升级记录
 
+### v0.1.11（2026-04-16）— 后台调度链稳定性修复
+
+**这次修了什么：**
+- 压力测试会把 relayer 后台打爆
+- `healthz` 长时间退化成 `Warm timed out after 30000ms`
+- `clients`、`backgroundQueued` 只涨不回落，导致用户离开电脑后也可能出问题
+
+**这次怎么修：**
+
+1. 后台调度链只动服务端，不碰浏览器热路径：
+   - `router/index.js`
+   - `router/state.js`
+   - `router/heavy.js`
+   - `router/warm.js`
+   - `router/sync/watcher.js`
+   - `router/routes/control.js`
+2. `backgroundQueue` 增加：
+   - 硬上限
+   - TTL 过期丢弃
+   - overload 时拒绝低价值后台任务
+3. watcher 增加：
+   - stale client 裁剪
+   - tracked session 预算上限
+   - roots refresh TTL
+4. 新增 schedulerMode：
+   - `normal`
+   - `overload`
+   - `recovering`
+5. `healthz` 现在能直接看出：
+   - 是否 overload
+   - 是否正在 recovering
+   - dropped / pruned 统计
+
+**压测结果：**
+- 多轮 browser smoke：通过
+- 多轮 fresh browser / incognito：通过
+- 多轮 workspace switch：通过
+- 2 分钟稳态综合压测中：
+  - `failureReason` 不再出现 warm timeout
+  - `backgroundQueued` 最终回落到 0
+  - `clients` 从峰值回落到 1
+  - `schedulerMode` 能从 `overload` 回到 `recovering`
+
 ### v0.1.10（2026-04-16）— 稳定版重建
 
 **这次修了什么：**

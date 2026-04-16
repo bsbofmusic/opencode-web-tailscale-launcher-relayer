@@ -1,6 +1,6 @@
 "use strict"
 
-const { backgroundWarmPaused, setLastReason, setClientHeads, setSyncState } = require("../state")
+const { backgroundWarmPaused, setLastReason, setClientHeads, setSyncState, pruneStaleClients, schedulerOverloaded, setSchedulerMode } = require("../state")
 const { cacheKey } = require("../util")
 const { emitTargetEvent } = require("./bus")
 const { saveStateCache } = require("./disk-cache")
@@ -13,6 +13,11 @@ async function tickWatcher(state, config) {
   state.watcherBusy = true
   const { fetchJson, fetchJsonWith, buildWorkspaceRoots, buildSessionIndex, buildMeta, fetchAllWorkspaceRoots, projectInventory, invalidJson } = require("../warm")
   try {
+    const overload = schedulerOverloaded(state, config)
+    const pruneTtl = overload ? Number(config?.watcherTrackClientMsOverload || 90000) : Number(config?.watcherTrackClientMs || 120000)
+    pruneStaleClients(state, pruneTtl)
+    if (!state.clients.size) return
+    setSchedulerMode(state, overload ? "overload" : (state.schedulerMode === "overload" ? "recovering" : "normal"), overload ? "queue-pressure" : null)
     const protectedMode = backgroundWarmPaused(state)
     const wasOffline = state.offline
     const health = await fetchJson(state.target, "/global/health", config)
@@ -36,7 +41,11 @@ async function tickWatcher(state, config) {
     inventory = projectInventory(inventory, buildWorkspaceRoots(inventory, discoveryList, config.extraRoots))
     state.inventory = inventory
     state.sessionList = discoveryList
-    await fetchAllWorkspaceRoots(state, state.target, config)
+    const rootsTtl = Number(config?.rootsRefreshTtlMs || 300000)
+    if (!overload && (!state.lastRootsRefreshAt || Date.now() - state.lastRootsRefreshAt >= rootsTtl)) {
+      await fetchAllWorkspaceRoots(state, state.target, config)
+      state.lastRootsRefreshAt = Date.now()
+    }
     const roots = buildWorkspaceRoots(state.inventory, discoveryList, config.extraRoots)
     state.sessionList = buildSessionIndex(roots, state.inventory, state.workspaceSessions, discoveryList, config.maxSessions || 80)
     state.meta = buildMeta(state.target, health.data, discoveryList, state.inventory, state.workspaceSessions, health.latencyMs, config)
@@ -54,7 +63,7 @@ async function tickWatcher(state, config) {
       })
     }
 
-    const entries = trackedEntries(state)
+    const entries = trackedEntries(state, config, overload)
     for (const [entryKey, entry] of entries) {
       const next = await fetchJsonWith(
         state.target,
@@ -188,9 +197,15 @@ function clientTrackedSession(client) {
   return null
 }
 
-function trackedEntries(state) {
+function trackedEntries(state, config, overload) {
   const entries = new Map()
+  const ttl = Number((config || state.config)?.watcherTrackClientMs || 120000)
+  const threshold = Date.now() - ttl
+  const budget = overload
+    ? Number((config || state.config)?.watcherSessionBudgetOverload || 1)
+    : Number((config || state.config)?.watcherSessionBudget || 4)
   for (const client of state.clients.values()) {
+    if ((client.lastAccessAt || 0) < threshold) continue
     const session = clientTrackedSession(client)
     if (!session) continue
     const key = cacheKey(session.directory, session.sessionID, 80)
@@ -202,6 +217,7 @@ function trackedEntries(state) {
       at: 0,
       baseline: true,
     })
+    if (entries.size >= budget) break
   }
   return [...entries.entries()]
 }
