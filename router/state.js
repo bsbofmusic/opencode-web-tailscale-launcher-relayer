@@ -433,6 +433,18 @@ function setLastReason(state, client, reason) {
   state.lastReasonClient = client?.id || sharedClientID
 }
 
+function clearRecoveryState(state, targetStatus) {
+  state.targetStatus = targetStatus
+  state.failureReason = null
+  state.offline = false
+  state.offlineReason = null
+  state.failureCount = 0
+  state.backoffUntil = 0
+  state.lastError = null
+  state.lastReason = null
+  state.lastReasonClient = null
+}
+
 function clearLastReason(state, client) {
   const key = client?.id || sharedClientID
   if (!state.lastReason || state.lastReasonClient !== key) return
@@ -508,6 +520,7 @@ module.exports = {
   setSchedulerMode,
   warmBusy,
   setLastReason,
+  clearRecoveryState,
   clearLastReason,
   rememberActiveSession,
   requestDirectory,

@@ -80,6 +80,36 @@ node router/vps-opencode-router.js
 
 ## 升级记录
 
+### v0.1.12（2026-04-16）— 后台恢复态清理版
+
+**这次修了什么：**
+- 后台调度链已经能扛压，但 `healthz` 在恢复后还残留旧的 `failureReason / lastError / lastReason`
+- 这会让运维误以为系统仍然坏着，即使前台功能和后台队列都已经恢复
+
+**这次怎么修：**
+
+1. 在 `router/state.js` 增加统一 `clearRecoveryState()` helper
+2. 只在 `warm.js` 和 `watcher.js` 的**完整恢复成功点**调用它
+3. 清掉：
+   - `failureReason`
+   - `offline`
+   - `offlineReason`
+   - `failureCount`
+   - `backoffUntil`
+   - `lastError`
+   - `lastReason`
+4. 不改浏览器热路径，不改 message body 语义，不改 upstream
+
+**验证结果：**
+- browser smoke：多轮通过
+- fresh browser / incognito：多轮通过
+- workspace switch：多轮通过
+- 2 分钟稳态综合压测中：
+  - `failureReason` 维持为空
+  - `lastError` 维持为空
+  - `backgroundQueued` 最终回到 0
+  - `clients` 从峰值回落
+
 ### v0.1.11（2026-04-16）— 后台调度链稳定性修复
 
 **这次修了什么：**

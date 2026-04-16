@@ -2,7 +2,7 @@
 
 const http = require("http")
 const { now, fresh, classifyError, cacheKey, dirKey } = require("./util")
-const { setWarm, warmBusy, setLastReason, backgroundWarmPaused, clientSafeMode, touchState, targetAdmission, schedulerOverloaded, setSchedulerMode } = require("./state")
+const { setWarm, warmBusy, setLastReason, backgroundWarmPaused, clientSafeMode, touchState, targetAdmission, schedulerOverloaded, setSchedulerMode, clearRecoveryState } = require("./state")
 const { runHeavy, enqueueBackground } = require("./heavy")
 const { saveStateCache } = require("./sync/disk-cache")
 
@@ -695,9 +695,10 @@ async function warm(state, client, force, options, config) {
     state.failureReason = fastMetaReady ? null : fastMeta.sessions.error || "No restoreable session found"
     state.admission = targetAdmission(state)
     if (fastMetaReady) {
-      state.failureCount = 0
-      state.backoffUntil = 0
+      clearRecoveryState(state, "ready")
       state.availabilityAt = now()
+    } else if (state.targetStatus === "no-session") {
+      clearRecoveryState(state, "no-session")
     }
     saveStateCache(state, config)
     const overload = schedulerOverloaded(state, cfg)

@@ -1,6 +1,6 @@
 "use strict"
 
-const { backgroundWarmPaused, setLastReason, setClientHeads, setSyncState, pruneStaleClients, schedulerOverloaded, setSchedulerMode } = require("../state")
+const { backgroundWarmPaused, setLastReason, setClientHeads, setSyncState, pruneStaleClients, schedulerOverloaded, setSchedulerMode, clearRecoveryState } = require("../state")
 const { cacheKey } = require("../util")
 const { emitTargetEvent } = require("./bus")
 const { saveStateCache } = require("./disk-cache")
@@ -53,8 +53,7 @@ async function tickWatcher(state, config) {
     state.targetStatus = state.meta.ready ? "ready" : "no-session"
     state.failureReason = state.meta.ready ? null : state.meta.sessions.error
     state.availabilityAt = Date.now()
-    state.failureCount = 0
-    state.backoffUntil = 0
+    clearRecoveryState(state, state.meta.ready ? "ready" : "no-session")
 
     if (prevList !== JSON.stringify(state.sessionList)) {
       emitTargetEvent(state.target, "session-list-updated", {
