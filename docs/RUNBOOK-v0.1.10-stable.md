@@ -8,6 +8,19 @@
   - `router/routes/cache.js`
   - `router/sync/disk-cache.js`
 
+## Conservative timeout recommendation
+
+For VPS environments with Tailscale + reverse proxy in front, prefer:
+
+```bash
+OPENCODE_ROUTER_INSPECT_TIMEOUT_MS=8000
+OPENCODE_ROUTER_WARM_TIMEOUT_MS=30000
+OPENCODE_ROUTER_HTML_TIMEOUT_MS=8000
+OPENCODE_ROUTER_RECOVERY_HTML_TIMEOUT_MS=15000
+```
+
+Do not tighten `WARM_TIMEOUT_MS` below `30000` unless the deployment has already been load-tested.
+
 ## Allowed candidate scope
 - `router/index.js`
 - `router/routes/control.js`
