@@ -263,6 +263,70 @@ function serialize(value) {
     .replace(/\u2029/g, "\\u2029")
 }
 
+function compatBootstrapRuntime(targetExpr, metaExpr) {
+  return `
+    const serverKey = 'opencode.global.dat:server'
+    const globalProjectKey = 'opencode.global.dat:globalSync.project'
+    const defaultServerKey = 'opencode.settings.dat:defaultServerUrl'
+    const compatTargetKey = 'opencode.router.dat:compat-target'
+    function compatRead(key, fallback) {
+      try {
+        const hit = localStorage.getItem(key)
+        return hit ? JSON.parse(hit) : fallback
+      } catch {
+        return fallback
+      }
+    }
+    function compatWrite(key, value) {
+      try { localStorage.setItem(key, JSON.stringify(value)) } catch {}
+    }
+    function compatServerKey() {
+      return (location.hostname === '127.0.0.1' || location.hostname === 'localhost') ? 'local' : location.origin
+    }
+    function compatRoots(meta) {
+      const roots = (meta?.projects?.roots || meta?.sessions?.directories || [])
+      return roots.filter(function (root) {
+        return root && root !== '/' && !(root.length === 1 && root.charCodeAt(0) === 92)
+      })
+    }
+    function compatInventory(meta) {
+      const inventory = Array.isArray(meta?.projects?.inventory) ? meta.projects.inventory : []
+      return inventory.filter(function (item) {
+        return item && item.worktree && item.worktree !== '/' && !(item.worktree.length === 1 && item.worktree.charCodeAt(0) === 92)
+      })
+    }
+    function compatProjectEntry(root, inventoryItem) {
+      if (inventoryItem) return { ...inventoryItem }
+      return {
+        id: 'relay:' + btoa(unescape(encodeURIComponent(String(root || '')))).replace(/=+$/g, ''),
+        worktree: root,
+        sandboxes: [],
+        time: { created: Date.now(), updated: Date.now() },
+      }
+    }
+    function compatSeed(meta) {
+      const compatTarget = ${targetExpr}
+      if (!meta || !compatTarget?.host || !compatTarget?.port) return
+      const roots = compatRoots(meta)
+      const inventory = compatInventory(meta)
+      const inventoryByRoot = new Map(inventory.map(function (item) { return [String(item.worktree || '').toLowerCase(), item] }))
+      const currentKey = compatServerKey()
+      const server = compatRead(serverKey, {}) || {}
+      const projects = { ...(server.projects || {}) }
+      projects[currentKey] = roots.map(function (root) {
+        return compatProjectEntry(root, inventoryByRoot.get(String(root).toLowerCase()))
+      })
+      compatWrite(serverKey, { ...server, projects })
+      const globalSync = compatRead(globalProjectKey, {}) || {}
+      compatWrite(globalProjectKey, { ...globalSync, value: inventory.filter(function (item) { return roots.includes(item.worktree) }) })
+      try { localStorage.setItem(defaultServerKey, location.origin) } catch {}
+      compatWrite(compatTargetKey, { host: compatTarget.host, port: compatTarget.port })
+    }
+    const compatMeta = ${metaExpr}
+    compatSeed(compatMeta)
+  `
+}
+
 function launchPage(target, clientID, initial) {
   const payload = serialize({ ...target, client: clientID })
   const initialPayload = serialize(initial || null)
@@ -310,13 +374,8 @@ function launchPage(target, clientID, initial) {
     const fill = document.getElementById('fill')
     const stage = document.getElementById('stage')
     const note = document.getElementById('note')
-    const serverKey = 'opencode.global.dat:server'
-    const globalProjectKey = 'opencode.global.dat:globalSync.project'
-    const layoutKey = 'opencode.global.dat:layout.page'
-    const defaultServerKey = 'opencode.settings.dat:defaultServerUrl'
     const snapshotKey = 'opencode.router.dat:snapshot'
     const clientKey = 'opencode.router.dat:client'
-    const origin = location.origin
     const fallback = document.getElementById('fallback')
     let polls = 0
     let cachedLaunch = null
@@ -324,8 +383,6 @@ function launchPage(target, clientID, initial) {
     let usedInitial = false
     const initial = JSON.parse(document.getElementById('oc-launch-initial').textContent)
     const shownAt = Date.now()
-    function read(key) { try { return JSON.parse(localStorage.getItem(key) || '{}') } catch { return {} } }
-    function write(key, value) { localStorage.setItem(key, JSON.stringify(value)) }
     sessionStorage.setItem(clientKey, target.client)
     function encodeDir(value) {
       return btoa(unescape(encodeURIComponent(String(value || '')))).split('+').join('-').split('/').join('_').replace(/=+$/g, '')
@@ -366,6 +423,7 @@ function launchPage(target, clientID, initial) {
       })
       sessionStorage.setItem(clientKey, target.client)
       sessionStorage.setItem(snapshotKey, JSON.stringify({ cachedAt: Date.now(), source: 'vps', target: target, workspaceRoots }))
+      ${compatBootstrapRuntime("target", "meta")}
     }
     function label(value) {
       const map = {
@@ -468,7 +526,8 @@ function launchPage(target, clientID, initial) {
 </html>`
 }
 
-function sessionSyncRuntime() {
+function sessionSyncRuntime(bootstrap) {
+  const bootstrapPayload = serialize(bootstrap || null)
   return `<script id="oc-tailnet-sync-runtime">;(() => {
     if (window.__ocTailnetSync) return
     const q = new URLSearchParams(location.search)
@@ -481,8 +540,10 @@ function sessionSyncRuntime() {
     }
     const minGap = 2000
     const startedAt = Date.now()
+    const bootstrap = ${bootstrapPayload}
     const base = '?host=' + encodeURIComponent(host) + '&port=' + encodeURIComponent(port) + '&client=' + encodeURIComponent(client)
     const withBase = (path) => path + (path.includes('?') ? '&' : '?') + 'host=' + encodeURIComponent(host) + '&port=' + encodeURIComponent(port) + '&client=' + encodeURIComponent(client)
+    ${compatBootstrapRuntime("bootstrap?.target || { host, port }", "bootstrap?.meta || null")}
     const decode = (input) => {
       try {
         const text = input.replace(/-/g, '+').replace(/_/g, '/')
@@ -557,6 +618,9 @@ function sessionSyncRuntime() {
       if (!view?.directory || !view?.sessionID) return
       const routeAtStart = view.route || ''
       const data = await fetchJson(withView('/__oc/progress'))
+      if (data.meta) {
+        ${compatBootstrapRuntime("{ host, port }", "data.meta")}
+      }
       if ((currentView()?.route || '') !== routeAtStart) return
       window.__ocTailnetSync.state = data.syncState || 'live'
       window.__ocTailnetSync.lastAction = data.lastAction || 'noop'

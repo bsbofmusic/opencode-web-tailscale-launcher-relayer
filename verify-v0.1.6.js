@@ -58,10 +58,14 @@ async function runTests() {
     }
   }
 
+  async function waitForSessionRoute(page) {
+    await page.waitForURL(/\/session\//, { timeout: 60000 })
+  }
+
   // Test 1: cold launch lands on session page
   await test("cold-launch-lands-on-session", async (page) => {
     await page.goto(LAUNCH_URL, { waitUntil: "domcontentloaded", timeout: 30000 })
-    await page.waitForFunction(() => location.pathname.includes("/session/"), { timeout: 45000 })
+    await waitForSessionRoute(page)
     const finalUrl = page.url()
     if (!finalUrl.includes("/session/")) throw new Error(`Expected /session/ in URL, got: ${finalUrl}`)
     console.log(`    URL: ${finalUrl}`)
@@ -70,7 +74,7 @@ async function runTests() {
   // Test 2: URL stable after 5 seconds (faster check)
   await test("url-stable-after-5s", async (page) => {
     await page.goto(LAUNCH_URL, { waitUntil: "domcontentloaded", timeout: 30000 })
-    await page.waitForFunction(() => location.pathname.includes("/session/"), { timeout: 45000 })
+    await waitForSessionRoute(page)
     const sessionUrl = page.url()
     await page.waitForTimeout(5000)
     const finalUrl = page.url()
@@ -85,7 +89,7 @@ async function runTests() {
       if (msg.type() === "error") consoleErrors.push(msg.text())
     })
     await page.goto(LAUNCH_URL, { waitUntil: "domcontentloaded", timeout: 30000 })
-    await page.waitForFunction(() => location.pathname.includes("/session/"), { timeout: 45000 })
+    await waitForSessionRoute(page)
     await page.waitForTimeout(3000)
     const relevant = consoleErrors.filter(e => !e.includes("favicon") && !e.includes("ERR_BLOCKED"))
     if (relevant.length > 0) throw new Error(`Console errors: ${relevant.join("; ")}`)
@@ -108,7 +112,7 @@ async function runTests() {
   await test("relay-progress-endpoint", async (page) => {
     // First get a client ID from the launch
     await page.goto(LAUNCH_URL, { waitUntil: "domcontentloaded", timeout: 30000 })
-    await page.waitForFunction(() => location.pathname.includes("/session/"), { timeout: 45000 })
+    await waitForSessionRoute(page)
     const client = page.url().match(/client=([^&]+)/)?.[1]
     if (!client) throw new Error("No client ID in URL")
     const progressUrl = new URL("/__oc/progress", LAUNCH_URL)

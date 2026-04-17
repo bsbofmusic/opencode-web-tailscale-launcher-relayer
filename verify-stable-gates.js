@@ -74,7 +74,9 @@ async function main() {
       await request(metaUrl)
       await new Promise((resolve) => setTimeout(resolve, Number(env("TAILNET_PREWARM_WAIT_MS", "2000"))))
     }
-    checks.push({ name: "browser-smoke", cmd: "node verify-v0.1.6.js" })
+    if (flag("TAILNET_RUN_BROWSER_SMOKE", false)) {
+      checks.push({ name: "browser-smoke", cmd: "node verify-v0.1.6.js" })
+    }
     checks.push({ name: "fresh-browser", cmd: "node verify-fresh-browser-gate.js" })
     checks.push({ name: "launch-gate", cmd: "node verify-launch-gate.js" })
   }

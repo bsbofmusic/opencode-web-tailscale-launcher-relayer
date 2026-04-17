@@ -361,7 +361,7 @@ function proxyRequest(ctx, req, res) {
             client.refreshFailures = 0
           }
           if (String(headers["content-type"] || "").includes("text/html")) {
-            body = injectRuntime(body)
+            body = injectRuntime(body, state, target)
             delete headers["transfer-encoding"]
             headers["content-length"] = Buffer.byteLength(body, "utf8")
             for (const assetPath of extractAssetPaths(body)) warmAsset(state, target, assetPath)
@@ -429,8 +429,8 @@ function proxyRequest(ctx, req, res) {
   runRequest()
 }
 
-function injectRuntime(body) {
-  const tag = sessionSyncRuntime()
+function injectRuntime(body, state, target) {
+  const tag = sessionSyncRuntime({ target, meta: state?.meta || null })
   if (body.includes("oc-tailnet-sync-runtime")) return body
   if (body.includes("</body>")) return body.replace("</body>", `${tag}</body>`)
   return `${body}${tag}`

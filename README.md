@@ -80,6 +80,51 @@ node router/vps-opencode-router.js
 
 ## 升级记录
 
+### v0.2.2（2026-04-17）— fresh/incognito 兼容层补全版
+
+**这次修了什么：**
+- 在稳定 fallback 版里，停止 relayer 写 upstream 导航 authority 是正确的
+- 但同时把 fresh/incognito 启动所需的最小兼容 bootstrap 也删过头了
+- 结果是：
+  - 正常浏览器还能靠旧 localStorage 勉强工作
+  - fresh / incognito 会出现工作区 roots 丢失
+  - `verify-fresh-browser-gate.js` 失败
+
+**这次怎么修：**
+
+1. 恢复最小 compat bootstrap，但**不恢复导航 authority**：
+   - `opencode.global.dat:server`
+   - `opencode.global.dat:globalSync.project`
+   - `opencode.settings.dat:defaultServerUrl`
+   - `opencode.router.dat:compat-target`
+2. 保持禁止写这些旧机制：
+   - `layout.page`
+   - `server.lastProject`
+   - latest-session / referer / warm.latest authority
+3. 将 compat bootstrap 同时补到：
+   - launch 页 seed
+   - session HTML 注入 runtime
+4. 修正 workspace authority 缓存面：
+   - `/path` 只按当前目录返回
+   - `/project/current`、roots、detail 与当前 workspace 对齐
+5. 验证链收口：
+   - fresh/incognito gate
+   - stable gates
+   - E workspace authority probe
+   - E workspace create session + prompt append probe
+
+**验证结果：**
+- `verify-fresh-browser-gate.js`：通过
+- `verify-stable-gates.js`：通过
+- `relay-benchmark.js`：通过
+- fresh/incognito 打开后可看到：
+  - `server`
+  - `globalProject`
+  - `defaultServer`
+  - `snapshot`
+- `E:\CODE` 的 `/path`、`/project/current`、roots、detail 一致
+- `E:\CODE` 新建 session 后可正常 `prompt_async` 并看到消息追加
+
 ### v0.2.1（2026-04-17）— 稳定 fallback 版
 
 **这次目标：**

@@ -12,7 +12,9 @@ const PASS = process.env.RELAYER_DEPLOY_PASS || "Zz76121819100!"
 const REMOTE_DIR = process.env.RELAYER_DEPLOY_DIR || "/opt/opencode-router"
 const SERVICE = process.env.RELAYER_DEPLOY_SERVICE || "opencode-router.service"
 const SITE_URL = process.env.RELAYER_SITE_URL || "https://opencode.cosymart.top"
-const RELEASE_ID = process.env.OPENCODE_ROUTER_RELEASE_ID || "v0.2.1"
+const TARGET_HOST = process.env.RELAYER_TARGET_HOST || "100.121.130.36"
+const TARGET_PORT = process.env.RELAYER_TARGET_PORT || "3000"
+const RELEASE_ID = process.env.OPENCODE_ROUTER_RELEASE_ID || "v0.2.2"
 const CONTRACT_VERSION = process.env.OPENCODE_ROUTER_CONTRACT_VERSION || "2026-04-17.cli-grade"
 const CACHE_SCHEMA = process.env.OPENCODE_ROUTER_CACHE_SCHEMA || RELEASE_ID
 
@@ -102,6 +104,16 @@ function httpsText(url) {
   })
 }
 
+async function waitForReady(url, attempts, delayMs) {
+  let last = null
+  for (let i = 0; i < attempts; i++) {
+    last = await httpsJson(url)
+    if (last.status === 200 && last.data?.ok === true) return last
+    await new Promise((resolve) => setTimeout(resolve, delayMs))
+  }
+  return last
+}
+
 async function main() {
   const manifest = manifestHash()
   const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14)
@@ -162,7 +174,8 @@ async function main() {
 
   await new Promise((resolve) => setTimeout(resolve, 3000))
   const livez = await httpsJson(`${SITE_URL}/__oc/livez`)
-  const readyz = await httpsJson(`${SITE_URL}/__oc/readyz`)
+  await httpsJson(`${SITE_URL}/__oc/meta?host=${encodeURIComponent(TARGET_HOST)}&port=${encodeURIComponent(TARGET_PORT)}&client=deploy_probe`).catch(() => null)
+  const readyz = await waitForReady(`${SITE_URL}/__oc/readyz`, 12, 1000)
   const modez = await httpsJson(`${SITE_URL}/__oc/modez`)
   const healthz = await httpsJson(`${SITE_URL}/__oc/healthz`)
   const root = await httpsText(`${SITE_URL}/`)

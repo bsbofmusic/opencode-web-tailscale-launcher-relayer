@@ -423,6 +423,13 @@ function selfHealState(state, config) {
   if (before > state.backgroundQueue.length) {
     state.stats.expiredBackgroundJobs += before - state.backgroundQueue.length
   }
+  if (backgroundWarmPaused(state) && state.heavyBackgroundQueue.length) {
+    state.stats.droppedBackgroundJobs += state.heavyBackgroundQueue.length
+    state.heavyBackgroundQueue = []
+    if (!schedulerOverloaded(state, cfg) && state.schedulerMode === "overload") {
+      setSchedulerMode(state, state.meta?.ready ? "recovering" : "normal", "paused-heavy-drain")
+    }
+  }
   if (state.schedulerMode !== "overload") return false
   if (!state.overloadSince || now() - state.overloadSince < overloadMs) return false
   const dropped = state.backgroundQueue.length + state.heavyBackgroundQueue.length
