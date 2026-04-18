@@ -169,7 +169,7 @@ function maybeServeCached(ctx, req, res) {
     if (!fresh(hit.at, snapshotCacheMs)) {
       state.stats.cacheMiss += 1
       refresh(state, client, config)
-      return serveStale(hit)
+      return false
     }
     state.stats.cacheHit += 1
     clearLastReason(state, client)

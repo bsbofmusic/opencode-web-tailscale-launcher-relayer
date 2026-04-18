@@ -166,11 +166,18 @@ function headFromBody(sessionID, directory, body) {
   } catch {}
   if (!Array.isArray(rows)) rows = []
   const tail = rows.length ? rows[rows.length - 1] : null
+  const text = String(body || "")
+  let hash = 2166136261
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i)
+    hash = Math.imul(hash, 16777619)
+  }
   return {
     sessionID,
     directory,
     messageCount: rows.length,
     tailID: tail?.info?.id || tail?.id || null,
+    bodyRevision: `${text.length}:${hash >>> 0}`,
   }
 }
 
@@ -181,7 +188,8 @@ function sameHead(a, b) {
     a.sessionID === b.sessionID &&
     a.directory === b.directory &&
     a.messageCount === b.messageCount &&
-    a.tailID === b.tailID
+    a.tailID === b.tailID &&
+    a.bodyRevision === b.bodyRevision
   )
 }
 

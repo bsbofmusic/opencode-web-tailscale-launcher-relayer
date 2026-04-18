@@ -3,7 +3,7 @@
 const http = require("http")
 const { json, raw, relayHeaders } = require("../http")
 const { sessionTimeoutPage, sessionSyncRuntime } = require("../pages")
-const { clientSafeMode, clearLastReason, setLastReason, rememberActiveSession, requestDirectory, messageBypassReason, setClientHeads, setSyncState, syncAction, syncClientView } = require("../state")
+const { clientSafeMode, clearLastReason, setLastReason, rememberActiveSession, requestDirectory, messageBypassReason, messageHead, setClientHeads, setSyncState, syncAction, syncClientView } = require("../state")
 const { runHeavy } = require("../heavy")
 const { getAgent, cacheMessages, cacheProjectCurrent, fetchJsonWith, fetchWorkspaceRoot, rememberWorkspaceSessions, buildWorkspaceRoots, projectInventory } = require("../warm")
 const { enqueueBackground } = require("../heavy")
@@ -273,17 +273,25 @@ function proxyRequest(ctx, req, res) {
         const ok = status >= 200 && status < 300
         if (ok && msg) {
           const sessionID = decodeURIComponent(msg[1])
-          state.messages.set(cacheKey(dir, sessionID, limit), {
-            body,
-            type: String(headers["content-type"] || "application/json"),
-            status,
-            at: now(),
-            sessionID,
-            directory: dir,
-            limit,
-            source: "proxy",
-            sourceAt: now(),
-          })
+          const pendingWindow = Boolean(
+            client.submitPendingSessionID === sessionID &&
+            client.submitPendingDirectory === dir &&
+            client.localSubmitUntil &&
+            client.localSubmitUntil > Date.now()
+          )
+          if (!(pendingWindow && limit !== 80)) {
+            state.messages.set(cacheKey(dir, sessionID, limit), {
+              body,
+              type: String(headers["content-type"] || "application/json"),
+              status,
+              at: now(),
+              sessionID,
+              directory: dir,
+              limit,
+              source: "proxy",
+              sourceAt: now(),
+            })
+          }
         }
         if (ok && promptRequest) {
           const sessionID = promptMatch ? decodeURIComponent(promptMatch[1]) : null
@@ -298,6 +306,9 @@ function proxyRequest(ctx, req, res) {
               const peerSessionID = peer.view?.sessionID || peer.activeSessionID
               const peerDirectory = peer.view?.directory || peer.activeDirectory
               if (peerSessionID !== sessionID || peerDirectory !== directory) continue
+              peer.submitPendingSessionID = sessionID
+              peer.submitPendingDirectory = directory
+              peer.submitPendingHead = messageHead(state, directory, sessionID, 80)
               peer.localSubmitUntil = Date.now() + 8000
               setSyncState(peer, "stale", "peer-submit", peer.lastAction || "noop")
               emitTargetEvent(state.target, "sync-stale", {

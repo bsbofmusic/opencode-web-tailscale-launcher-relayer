@@ -20,6 +20,7 @@ function emptyHead() {
     directory: null,
     messageCount: 0,
     tailID: null,
+    bodyRevision: "0",
     updatedAt: 0,
   }
 }
@@ -131,6 +132,9 @@ function createClientState(id) {
     lastAction: "noop",
     lastActionAt: 0,
     localSubmitUntil: 0,
+    submitPendingSessionID: null,
+    submitPendingDirectory: null,
+    submitPendingHead: emptyHead(),
     refreshFailures: 0,
     resumeSafeUntil: 0,
     resumeReason: null,
@@ -151,6 +155,16 @@ function parseHeadBody(body) {
   }
 }
 
+function bodyRevision(body) {
+  const text = String(body || "")
+  let hash = 2166136261
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i)
+    hash = Math.imul(hash, 16777619)
+  }
+  return `${text.length}:${hash >>> 0}`
+}
+
 function headFromEntry(entry, fallback) {
   const base = fallback || emptyHead()
   if (!entry) return { ...base }
@@ -161,6 +175,7 @@ function headFromEntry(entry, fallback) {
     directory: entry.directory || base.directory || null,
     messageCount: rows.length,
     tailID: tail?.info?.id || tail?.id || null,
+    bodyRevision: bodyRevision(entry.body),
     updatedAt: entry.at || now(),
   }
 }
@@ -168,7 +183,7 @@ function headFromEntry(entry, fallback) {
 function messageHead(state, directory, sessionID, limit) {
   return headFromEntry(
     state.messages.get(`${directory}\n${sessionID}\n${limit}`),
-    { sessionID, directory, messageCount: 0, tailID: null, updatedAt: 0 },
+    { sessionID, directory, messageCount: 0, tailID: null, bodyRevision: "0", updatedAt: 0 },
   )
 }
 
@@ -224,6 +239,10 @@ function syncClientView(state, client) {
   const remoteHead = messageHead(state, view.directory, view.sessionID, 80)
   const sameView = client.viewHead?.sessionID === view.sessionID && client.viewHead?.directory === view.directory
   const localSubmit = client.localSubmitUntil && client.localSubmitUntil > now()
+  const pendingCurrentView = Boolean(
+    client.submitPendingSessionID === view.sessionID &&
+    client.submitPendingDirectory === view.directory
+  )
   const hasViewBaseline = Boolean(client.viewHead?.updatedAt || client.viewHead?.messageCount || client.viewHead?.tailID)
   const viewHead = sameView && !localSubmit && hasViewBaseline ? client.viewHead : remoteHead
   setClientHeads(state, client, viewHead, remoteHead)
@@ -234,10 +253,31 @@ function syncClientView(state, client) {
   if (
     viewHead.sessionID === remoteHead.sessionID &&
     viewHead.directory === remoteHead.directory &&
-    (viewHead.messageCount !== remoteHead.messageCount || viewHead.tailID !== remoteHead.tailID)
+    (
+      viewHead.messageCount !== remoteHead.messageCount ||
+      viewHead.tailID !== remoteHead.tailID ||
+      viewHead.bodyRevision !== remoteHead.bodyRevision
+    )
   ) {
     setSyncState(client, "stale", client.staleReason || "head-advanced", client.lastAction || "noop")
     return
+  }
+  if (pendingCurrentView && localSubmit) {
+    const pendingHead = client.submitPendingHead || emptyHead()
+    const advanced = Boolean(
+      remoteHead.messageCount !== pendingHead.messageCount ||
+      remoteHead.tailID !== pendingHead.tailID ||
+      remoteHead.bodyRevision !== pendingHead.bodyRevision
+    )
+    if (!advanced) {
+      setSyncState(client, "stale", "peer-submit", client.lastAction || "noop")
+      return
+    }
+  }
+  if (pendingCurrentView) {
+    client.submitPendingSessionID = null
+    client.submitPendingDirectory = null
+    client.submitPendingHead = emptyHead()
   }
   setSyncState(client, "live", null, "noop")
 }
@@ -500,12 +540,26 @@ function requestDirectory(client, reqUrl, hintDirectory) {
 }
 
 function messageBypass(state, client, directory, sessionID, limit) {
+  const submitPending = Boolean(
+    client?.submitPendingSessionID === sessionID &&
+    client?.submitPendingDirectory === directory &&
+    client?.localSubmitUntil &&
+    client.localSubmitUntil > now()
+  )
+  if (submitPending && limit !== 80) return true
   if (client?.view?.sessionID === sessionID && client?.view?.directory === directory) return true
   if (client?.activeSessionID === sessionID && client?.activeDirectory === directory) return true
   return false
 }
 
 function messageBypassReason(state, client, directory, sessionID, limit) {
+  const submitPending = Boolean(
+    client?.submitPendingSessionID === sessionID &&
+    client?.submitPendingDirectory === directory &&
+    client?.localSubmitUntil &&
+    client.localSubmitUntil > now()
+  )
+  if (submitPending && limit !== 80) return "submit-pending-bypass"
   if (client?.view?.sessionID === sessionID && client?.view?.directory === directory) return "view-session-bypass"
   if (client?.activeSessionID === sessionID && client?.activeDirectory === directory) return "active-session-bypass"
   return null

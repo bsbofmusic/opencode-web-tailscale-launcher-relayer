@@ -91,7 +91,7 @@ async function withServers(fn) {
     OPENCODE_ROUTER_BACKGROUND_SOFT_LIMIT: String(envNumber("STRESS_BACKGROUND_SOFT_LIMIT", 10)),
     OPENCODE_ROUTER_MAX_BACKGROUND_QUEUE: String(envNumber("STRESS_MAX_BACKGROUND_QUEUE", 16)),
     OPENCODE_ROUTER_WATCHDOG_OVERLOAD_MS: String(envNumber("STRESS_WATCHDOG_OVERLOAD_MS", 4000)),
-    OPENCODE_ROUTER_RELEASE_ID: process.env.OPENCODE_ROUTER_RELEASE_ID || "v0.2.3",
+    OPENCODE_ROUTER_RELEASE_ID: process.env.OPENCODE_ROUTER_RELEASE_ID || "v0.2.4",
   })
   try {
     await waitFor(`http://127.0.0.1:${upstreamPort}/__debug/counts`)
@@ -161,7 +161,7 @@ async function main() {
     const state = health.data.states[0]
 
     assert.equal(livez.res.status, 200)
-    assert.equal(livez.data.release.releaseId, process.env.OPENCODE_ROUTER_RELEASE_ID || "v0.2.3")
+    assert.equal(livez.data.release.releaseId, process.env.OPENCODE_ROUTER_RELEASE_ID || "v0.2.4")
     assert.equal(readyz.res.status, 200)
     assert.equal(modez.res.status, 200)
     assert.equal(health.res.status, 200)

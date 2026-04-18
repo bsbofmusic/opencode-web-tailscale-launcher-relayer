@@ -1,6 +1,6 @@
 # OpenCode Tailnet Relayer
 
-> 把局域网里的 OpenCode 网页转发到公网浏览器，零魔改、体验和原生一样。
+> OpenCode 专用、零入侵 upstream、慢一点但稳定优先的 relayer CLI fallback 版。
 
 ---
 
@@ -9,6 +9,22 @@
 这是 **Relayer 主仓**。
 
 它负责把浏览器请求转发到你的局域网 OpenCode，让你通过公网浏览器使用 OpenCode Web。
+
+它的当前产品定位不是“通用 relay 平台”，而是：
+
+- **专门给 OpenCode 使用的 relayer CLI**
+- **零入侵 upstream OpenCode**
+- **不追求最高效率，优先追求最高稳定**
+- **在 authority 不清楚时宁可 fail-closed，也不偷偷猜测**
+- **优先保证：session 能加载、能发送、能实时更新**
+
+如果你在找的是：
+
+- 一个更快但更激进的版本
+- 一个适配任意 CLI 的通用框架
+- 一个继续堆自动修复/自动猜测的代理层
+
+那这个仓库当前不是这个方向。
 
 **Launcher 已迁移到独立仓库：**
 - `https://github.com/bsbofmusic/opencode-tailnet-launcher-windows`
@@ -28,7 +44,20 @@ Tailscale 隧道（加密打洞）
 局域网 OpenCode（:3000）
 ```
 
-Relayer 只负责一件事：接收浏览器请求 → 转发给 Tailscale → 返回结果给浏览器。中间不存数据、不改请求。
+Relayer 只负责一件事：接收浏览器请求 → 转发给 Tailscale → 返回结果给浏览器。
+
+但为了让 OpenCode 在公网浏览器里**稳定**可用，它会在 relayer 层补最小兼容与控制面能力，例如：
+
+- target / workspace / session authority 收口
+- fresh / incognito 最小 bootstrap 兼容层
+- send / realtime / stale cache 收口
+- health / ready / mode 观测面
+
+这些能力都只发生在 **relayer 层**，不会修改 upstream OpenCode 源码。
+
+换句话说：
+
+> 这不是一个“只做字节转发的 dumb proxy”，而是一个 **OpenCode 专用、稳定优先的 relayer CLI**。
 
 ---
 
@@ -48,6 +77,16 @@ Windows 发布物：
 ### 2. Relayer（VPS / Linux，本仓库）
 
 这是源码仓，不是 npm 包仓。
+
+当前推荐使用方式：
+
+- 把它当作 **稳定 fallback 版** 使用
+- 接受它比激进优化版更慢一点
+- 但换来更稳定的：
+  - workspace/session authority
+  - fresh/incognito 启动
+  - send / continue
+  - realtime update
 
 最小启动方式：
 
@@ -79,6 +118,38 @@ node router/vps-opencode-router.js
 ---
 
 ## 升级记录
+
+### v0.2.4（2026-04-18）— send / realtime / current-session correctness 收尾版
+
+**这次修了什么：**
+- `v0.2.3` 已经把 fresh/incognito、workspace authority、稳定 fallback 主线收住
+- 但业务实测仍有最后两类问题：
+  1. 有时发送后页面正文不能及时前进，像是“没发出去”
+  2. `limit=200` 历史视图仍可能比 `limit=80` 更旧，造成“偶发古早记录回跳”的错觉
+
+**这次怎么修：**
+
+1. `__oc/progress` 不再破坏 active authority，继续只更新当前页 `view`
+2. `state.js` 增加 `bodyRevision`：
+   - stale/live 判定不再只看 `messageCount/tailID`
+   - 同一条消息正文变了、即使 head 不变，也能识别为 stale
+3. `cache.js` 对 `limit != 80`：
+   - 过期后不再 `serveStale(hit)`
+   - 直接 miss → upstream，优先保证 correctness
+4. 当前活动会话在 submit 窗口内：
+   - `80` 和 `200` 都倾向 bypass / miss
+   - 不再把旧正文继续回写进 message cache
+5. `prompt_async` 成功后：
+   - 记录 `submitPendingSessionID / Directory / Head`
+   - 在 authority body/head 真正推进前，不过早回 `live`
+6. watcher 侧继续按 `view > active` 追踪，并纳入 `bodyRevision`
+
+**验证结果：**
+- `verify-stable-gates.js`：通过
+- `verify-stress-gate.js`：通过
+- `relay-benchmark.js`：通过
+- 浏览器页内直接发送消息后，不刷新整页即可看到新正文出现
+- D / E 工作区新 session：发送后 `limit=80` 与 `limit=200` 都同步前进
 
 ### v0.2.3（2026-04-18）— send / realtime / stale-jump 收口版
 
@@ -485,10 +556,12 @@ node router/vps-opencode-router.js
 
 ## 注意事项
 
-- **不修改 OpenCode 源码**，只做网络转发
+- **不修改 OpenCode 源码**，所有兼容层都在 relayer 内完成
 - Relayer 无状态，重启不丢用户 session（session 保存在 OpenCode 自身）
 - Launcher 和 Relayer 独立运行，可以只跑其中一个
 - Launcher 源码与 exe 发布已迁移到独立仓库
+- 当前版本主目标是 **稳定性**，不是极致速度
+- 当前建议把它当作 **OpenCode 专用 relayer CLI fallback 版** 使用，而不是通用型 CLI relay
 
 ---
 
