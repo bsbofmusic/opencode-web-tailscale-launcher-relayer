@@ -166,7 +166,7 @@ function parseJsonArray(body) {
 
 function proxyRequest(ctx, req, res) {
   const { target, state, client, reqUrl, config, wantCookie, priority } = ctx
-  const directory = requestDirectory(client, reqUrl)
+  const directory = requestDirectory(client, reqUrl, ctx.refererView?.directory)
   const projectMatch = reqUrl.pathname.match(/^\/project\/([^/]+)$/)
   const projectID = projectMatch ? decodeURIComponent(projectMatch[1]) : null
   const syntheticProject = directory ? currentProject(state, directory) : null
@@ -228,7 +228,7 @@ function proxyRequest(ctx, req, res) {
     const upstream = http.request(options, (up) => {
       if (finished) return
       const headers = stripHopHeaders(up.headers)
-      const dir = requestDirectory(client, reqUrl)
+      const dir = requestDirectory(client, reqUrl, ctx.refererView?.directory)
       const msg = reqUrl.pathname.match(/^\/session\/([^/]+)\/message$/)
       const limit = Number(reqUrl.searchParams.get("limit") || "0")
       const reason = msg && dir && !reqUrl.searchParams.has("cursor") && !reqUrl.searchParams.has("before") ? messageBypassReason(state, client, dir, decodeURIComponent(msg[1]), limit) : null
@@ -287,12 +287,17 @@ function proxyRequest(ctx, req, res) {
         }
         if (ok && promptRequest) {
           const sessionID = promptMatch ? decodeURIComponent(promptMatch[1]) : null
-          const directory = requestDirectory(client, reqUrl) || [...state.clients.values()].find((peer) => {
+          const directory = requestDirectory(client, reqUrl, ctx.refererView?.directory) || [...state.clients.values()].find((peer) => {
+            return (peer.view?.sessionID === sessionID && peer.view?.directory) || (peer.activeSessionID === sessionID && peer.activeDirectory)
+          })?.view?.directory || [...state.clients.values()].find((peer) => {
             return peer.activeSessionID === sessionID && peer.activeDirectory
           })?.activeDirectory || null
           if (sessionID && directory) {
+            invalidateSessionMessageCaches(state, directory, sessionID, 80)
             for (const peer of state.clients.values()) {
-              if (peer.activeSessionID !== sessionID || peer.activeDirectory !== directory) continue
+              const peerSessionID = peer.view?.sessionID || peer.activeSessionID
+              const peerDirectory = peer.view?.directory || peer.activeDirectory
+              if (peerSessionID !== sessionID || peerDirectory !== directory) continue
               peer.localSubmitUntil = Date.now() + 8000
               setSyncState(peer, "stale", "peer-submit", peer.lastAction || "noop")
               emitTargetEvent(state.target, "sync-stale", {
@@ -434,6 +439,16 @@ function injectRuntime(body, state, target) {
   if (body.includes("oc-tailnet-sync-runtime")) return body
   if (body.includes("</body>")) return body.replace("</body>", `${tag}</body>`)
   return `${body}${tag}`
+}
+
+function invalidateSessionMessageCaches(state, directory, sessionID, keepLimit) {
+  const prefix = `${directory}\n${sessionID}\n`
+  for (const key of [...state.messages.keys()]) {
+    if (!String(key).startsWith(prefix)) continue
+    const limit = Number(String(key).slice(prefix.length) || "0")
+    if (keepLimit != null && limit === keepLimit) continue
+    state.messages.delete(key)
+  }
 }
 
 module.exports = { proxyRequest, rewriteLocation }

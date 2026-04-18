@@ -80,6 +80,36 @@ node router/vps-opencode-router.js
 
 ## 升级记录
 
+### v0.2.3（2026-04-18）— send / realtime / stale-jump 收口版
+
+**这次修了什么：**
+- `v0.2.2` 已经把 fresh/incognito、workspace authority、稳定 fallback 收住
+- 但业务实测仍暴露两条主链问题：
+  1. 有时无法发送消息，提示拿不到当前对话
+  2. session message 视图会偶发跳回古早记录，尤其是 `limit=200` 历史视图与当前正文不一致
+
+**这次怎么修：**
+
+1. 把 `__oc/progress` 的 query override 从“覆写 active authority”改成“只更新当前页 view”
+2. `requestDirectory()` 收口为：
+   - query.directory
+   - referer/current page directory
+   - client.view.directory
+   - client.activeDirectory
+3. `prompt_async` 当前页 authority 优先；authority 不存在继续 fail-closed
+4. watcher 追踪 session 从 `active > view` 改成 `view > active`
+5. 当前活动会话的 message 视图（不只 80，连 200）全部 bypass cache
+6. 发送成功 / watcher 看到新 head 后，失效同 session 的其他 message cache，避免 80 新了、200 还是旧 body
+7. stress 验证链改成等待 `readyz` 恢复，不把瞬时恢复窗口误判成失败
+
+**验证结果：**
+- `router-sandbox-check.js`：通过
+- `verify-stress-gate.js`：通过
+- `verify-stable-gates.js`：通过
+- `relay-benchmark.js`：通过
+- D 工作区新 session：create / prompt / append 正常
+- E 工作区新 session：create / prompt / `limit=80` / `limit=200` 追加全部正常
+
 ### v0.2.2（2026-04-17）— fresh/incognito 兼容层补全版
 
 **这次修了什么：**

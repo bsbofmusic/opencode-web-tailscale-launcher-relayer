@@ -32,6 +32,16 @@ async function getJson(url, init) {
   return { res, data: text ? JSON.parse(text) : {} }
 }
 
+async function waitForReady(url, attempts = 20, delayMs = 500) {
+  let last = null
+  for (let i = 0; i < attempts; i++) {
+    last = await getJson(url)
+    if (last.res.status === 200 && last.data?.ok === true) return last
+    await sleep(delayMs)
+  }
+  return last
+}
+
 function startNode(file, env) {
   const child = spawn(process.execPath, [path.join(cwd, file)], {
     cwd,
@@ -81,7 +91,7 @@ async function withServers(fn) {
     OPENCODE_ROUTER_BACKGROUND_SOFT_LIMIT: String(envNumber("STRESS_BACKGROUND_SOFT_LIMIT", 10)),
     OPENCODE_ROUTER_MAX_BACKGROUND_QUEUE: String(envNumber("STRESS_MAX_BACKGROUND_QUEUE", 16)),
     OPENCODE_ROUTER_WATCHDOG_OVERLOAD_MS: String(envNumber("STRESS_WATCHDOG_OVERLOAD_MS", 4000)),
-    OPENCODE_ROUTER_RELEASE_ID: process.env.OPENCODE_ROUTER_RELEASE_ID || "v0.2.2",
+    OPENCODE_ROUTER_RELEASE_ID: process.env.OPENCODE_ROUTER_RELEASE_ID || "v0.2.3",
   })
   try {
     await waitFor(`http://127.0.0.1:${upstreamPort}/__debug/counts`)
@@ -146,12 +156,12 @@ async function main() {
     const durations = results.map((item) => item.durationMs)
     const health = await getJson(`${base}/__oc/healthz?${target}`)
     const livez = await getJson(`${base}/__oc/livez`)
-    const readyz = await getJson(`${base}/__oc/readyz`)
+    const readyz = await waitForReady(`${base}/__oc/readyz`)
     const modez = await getJson(`${base}/__oc/modez`)
     const state = health.data.states[0]
 
     assert.equal(livez.res.status, 200)
-    assert.equal(livez.data.release.releaseId, process.env.OPENCODE_ROUTER_RELEASE_ID || "v0.2.2")
+    assert.equal(livez.data.release.releaseId, process.env.OPENCODE_ROUTER_RELEASE_ID || "v0.2.3")
     assert.equal(readyz.res.status, 200)
     assert.equal(modez.res.status, 200)
     assert.equal(health.res.status, 200)

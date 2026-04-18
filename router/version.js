@@ -12,10 +12,10 @@ function safeSegment(value, fallback) {
 }
 
 const versionInfo = {
-  releaseId: env("OPENCODE_ROUTER_RELEASE_ID", "v0.2.2"),
+  releaseId: env("OPENCODE_ROUTER_RELEASE_ID", "v0.2.3"),
   contractVersion: env("OPENCODE_ROUTER_CONTRACT_VERSION", "2026-04-17.cli-grade"),
   manifestHash: env("OPENCODE_ROUTER_MANIFEST_HASH", "dev-manifest"),
-  cacheSchema: env("OPENCODE_ROUTER_CACHE_SCHEMA", "v0.2.2"),
+  cacheSchema: env("OPENCODE_ROUTER_CACHE_SCHEMA", "v0.2.3"),
 }
 
 function runtimeHeaders(extra) {

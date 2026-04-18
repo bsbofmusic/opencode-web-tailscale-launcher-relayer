@@ -84,7 +84,7 @@ function maybeServeCached(ctx, req, res) {
   syncWarm(state, client)
   touchState(state)
   touchClient(state, client, config)
-  const directory = requestDirectory(client, reqUrl)
+  const directory = requestDirectory(client, reqUrl, ctx.refererView?.directory)
   const priority = relayPriority(reqUrl, client)
   const assetCacheMs = config.assetCacheMs || 24 * 60 * 60 * 1000
   const directoryScopedBootstrap = new Set(["/path", "/agent"])
@@ -151,7 +151,7 @@ function maybeServeCached(ctx, req, res) {
     if (!fresh(hit.at, snapshotCacheMs)) {
       state.stats.cacheMiss += 1
       refresh(state, client, config)
-      return serveStale(hit)
+      return false
     }
     state.stats.cacheHit += 1
     clearLastReason(state, client)

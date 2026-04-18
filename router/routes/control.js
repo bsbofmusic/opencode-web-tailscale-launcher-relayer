@@ -305,8 +305,6 @@ function handleControl(ctx, req, res, states) {
       const allowOverride = Boolean(config.enableProgressQueryOverride)
       const override = allowOverride && sessionID && directory
       if (override) {
-        client.activeSessionID = sessionID
-        client.activeDirectory = directory
         setClientView(client, { sessionID, directory, pathname: null })
       }
       clearLastReason(state, client)

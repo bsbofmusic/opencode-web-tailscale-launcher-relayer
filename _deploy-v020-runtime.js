@@ -14,7 +14,7 @@ const SERVICE = process.env.RELAYER_DEPLOY_SERVICE || "opencode-router.service"
 const SITE_URL = process.env.RELAYER_SITE_URL || "https://opencode.cosymart.top"
 const TARGET_HOST = process.env.RELAYER_TARGET_HOST || "100.121.130.36"
 const TARGET_PORT = process.env.RELAYER_TARGET_PORT || "3000"
-const RELEASE_ID = process.env.OPENCODE_ROUTER_RELEASE_ID || "v0.2.2"
+const RELEASE_ID = process.env.OPENCODE_ROUTER_RELEASE_ID || "v0.2.3"
 const CONTRACT_VERSION = process.env.OPENCODE_ROUTER_CONTRACT_VERSION || "2026-04-17.cli-grade"
 const CACHE_SCHEMA = process.env.OPENCODE_ROUTER_CACHE_SCHEMA || RELEASE_ID
 

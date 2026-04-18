@@ -85,6 +85,7 @@ async function tickWatcher(state, config) {
         source: "watcher",
         sourceAt: Date.now(),
       })
+      invalidateSessionMessageCaches(state, entry.directory, entry.sessionID, 80)
       if (!baseline) {
         emitTargetEvent(state.target, "message-appended", {
           sessionID: entry.sessionID,
@@ -185,19 +186,29 @@ function sameHead(a, b) {
 }
 
 function clientTrackedSession(client) {
-  if (client.activeSessionID && client.activeDirectory) {
-    return {
-      sessionID: client.activeSessionID,
-      directory: client.activeDirectory,
-    }
-  }
   if (client.view?.sessionID && client.view?.directory) {
     return {
       sessionID: client.view.sessionID,
       directory: client.view.directory,
     }
   }
+  if (client.activeSessionID && client.activeDirectory) {
+    return {
+      sessionID: client.activeSessionID,
+      directory: client.activeDirectory,
+    }
+  }
   return null
+}
+
+function invalidateSessionMessageCaches(state, directory, sessionID, keepLimit) {
+  const prefix = `${directory}\n${sessionID}\n`
+  for (const key of [...state.messages.keys()]) {
+    if (!String(key).startsWith(prefix)) continue
+    const limit = Number(String(key).slice(prefix.length) || "0")
+    if (keepLimit != null && limit === keepLimit) continue
+    state.messages.delete(key)
+  }
 }
 
 function trackedEntries(state, config, overload) {

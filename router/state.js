@@ -495,18 +495,18 @@ function rememberActiveSession(client, reqUrl) {
   setClientView(client, { directory, sessionID, pathname: reqUrl.pathname })
 }
 
-function requestDirectory(client, reqUrl) {
-  return reqUrl.searchParams.get("directory") || client?.activeDirectory || ""
+function requestDirectory(client, reqUrl, hintDirectory) {
+  return reqUrl.searchParams.get("directory") || hintDirectory || client?.view?.directory || client?.activeDirectory || ""
 }
 
 function messageBypass(state, client, directory, sessionID, limit) {
-  if (limit !== 80) return false
+  if (client?.view?.sessionID === sessionID && client?.view?.directory === directory) return true
   if (client?.activeSessionID === sessionID && client?.activeDirectory === directory) return true
   return false
 }
 
 function messageBypassReason(state, client, directory, sessionID, limit) {
-  if (limit !== 80) return null
+  if (client?.view?.sessionID === sessionID && client?.view?.directory === directory) return "view-session-bypass"
   if (client?.activeSessionID === sessionID && client?.activeDirectory === directory) return "active-session-bypass"
   return null
 }

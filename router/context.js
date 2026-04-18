@@ -102,7 +102,7 @@ function buildContext(req, reqUrl, states, config) {
     ctx.isHeavy = isHeavyRequest(reqUrl)
     ctx.priority = relayPriority(reqUrl, ctx.client)
 
-    const directory = requestDirectory(ctx.client, reqUrl)
+    const directory = requestDirectory(ctx.client, reqUrl, refererView?.directory)
     const msgInfo = messageRequestInfo(reqUrl)
 
     if (msgInfo && directory && !reqUrl.searchParams.has("cursor")) {
