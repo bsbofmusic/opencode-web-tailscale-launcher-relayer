@@ -66,6 +66,7 @@ async function main() {
   const checks = []
   if (flag("TAILNET_RUN_SANDBOX", true)) {
     checks.push({ name: "sandbox-regression", cmd: "node router-sandbox-check.js" })
+    checks.push({ name: "root-restore-gate", cmd: "node verify-root-restore-gate.js" })
     checks.push({ name: "stress-gate", cmd: "node verify-stress-gate.js" })
   }
   if (flag("TAILNET_RUN_LIVE", hasLiveEnv())) {

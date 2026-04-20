@@ -112,6 +112,16 @@ function stripHopHeaders(headers) {
   return next
 }
 
+function explicitDirectoryHeader(req) {
+  const raw = req?.headers?.['x-opencode-directory'] || req?.headers?.['X-OC-DIRECTORY'] || req?.headers?.['x-oc-directory'] || ''
+  if (!raw) return ''
+  try {
+    return decodeURIComponent(String(raw))
+  } catch {
+    return String(raw)
+  }
+}
+
 function parseJsonArray(body) {
   try {
     const rows = JSON.parse(String(body || "[]"))
@@ -166,9 +176,20 @@ function parseJsonArray(body) {
 
 function proxyRequest(ctx, req, res) {
   const { target, state, client, reqUrl, config, wantCookie, priority } = ctx
-  const directory = requestDirectory(client, reqUrl, ctx.refererView?.directory)
+  const headerDirectory = explicitDirectoryHeader(req)
   const projectMatch = reqUrl.pathname.match(/^\/project\/([^/]+)$/)
   const projectID = projectMatch ? decodeURIComponent(projectMatch[1]) : null
+  const heavy = req.method === "GET" && isHeavyRequest(reqUrl)
+  const promptRequest = req.method === "POST" && /^\/session\/[^/]+\/prompt_async$/.test(reqUrl.pathname)
+  const guardHtml = req.method === "GET" && isSessionHtmlPath(reqUrl.pathname)
+  const assetRequest = req.method === "GET" && /^\/(assets\/|favicon|site\.webmanifest)/.test(reqUrl.pathname)
+  const messageRequest = req.method === "GET" && /^\/session\/[^/]+\/message$/.test(reqUrl.pathname)
+  const detailRequest = req.method === "GET" && /^\/session\/[^/]+$/.test(reqUrl.pathname)
+  const agentRequest = req.method === "GET" && reqUrl.pathname === "/agent"
+  const upstreamEventRequest = req.method === "GET" && reqUrl.pathname === "/global/event"
+  const promptMatch = req.method === "POST" ? reqUrl.pathname.match(/^\/session\/([^/]+)\/prompt_async$/) : null
+  const promptDirectoryHint = promptRequest ? (headerDirectory || ctx.refererView?.directory || "") : ""
+  const directory = requestDirectory(client, reqUrl, ctx.refererView?.directory) || promptDirectoryHint || headerDirectory
   const syntheticProject = directory ? currentProject(state, directory) : null
   if (req.method === "GET" && reqUrl.pathname === "/project/current" && syntheticProject?.id && String(syntheticProject.id).startsWith("relay:")) {
     clearLastReason(state, client)
@@ -185,15 +206,6 @@ function proxyRequest(ctx, req, res) {
     json(res, 200, item, relayHeaders(priority, "proxy", "synthetic-project-open"))
     return
   }
-  const heavy = req.method === "GET" && isHeavyRequest(reqUrl)
-  const promptRequest = req.method === "POST" && /^\/session\/[^/]+\/prompt_async$/.test(reqUrl.pathname)
-  const guardHtml = req.method === "GET" && isSessionHtmlPath(reqUrl.pathname)
-  const assetRequest = req.method === "GET" && /^\/(assets\/|favicon|site\.webmanifest)/.test(reqUrl.pathname)
-  const messageRequest = req.method === "GET" && /^\/session\/[^/]+\/message$/.test(reqUrl.pathname)
-  const detailRequest = req.method === "GET" && /^\/session\/[^/]+$/.test(reqUrl.pathname)
-  const agentRequest = req.method === "GET" && reqUrl.pathname === "/agent"
-  const upstreamEventRequest = req.method === "GET" && reqUrl.pathname === "/global/event"
-  const promptMatch = req.method === "POST" ? reqUrl.pathname.match(/^\/session\/([^/]+)\/prompt_async$/) : null
   const bootstrapRequest = req.method === "GET" && /^\/(path|project|project\/current|session\/status|global\/config|provider|config|agent)$/.test(reqUrl.pathname)
   const sensitiveStreamRequest = detailRequest || agentRequest || upstreamEventRequest
   const htmlProxyTimeoutMs = config.htmlProxyTimeoutMs || 8000
@@ -228,7 +240,7 @@ function proxyRequest(ctx, req, res) {
     const upstream = http.request(options, (up) => {
       if (finished) return
       const headers = stripHopHeaders(up.headers)
-      const dir = requestDirectory(client, reqUrl, ctx.refererView?.directory)
+      const dir = requestDirectory(client, reqUrl, ctx.refererView?.directory) || headerDirectory
       const msg = reqUrl.pathname.match(/^\/session\/([^/]+)\/message$/)
       const limit = Number(reqUrl.searchParams.get("limit") || "0")
       const reason = msg && dir && !reqUrl.searchParams.has("cursor") && !reqUrl.searchParams.has("before") ? messageBypassReason(state, client, dir, decodeURIComponent(msg[1]), limit) : null
@@ -295,26 +307,22 @@ function proxyRequest(ctx, req, res) {
         }
         if (ok && promptRequest) {
           const sessionID = promptMatch ? decodeURIComponent(promptMatch[1]) : null
-          const directory = requestDirectory(client, reqUrl, ctx.refererView?.directory) || [...state.clients.values()].find((peer) => {
-            return (peer.view?.sessionID === sessionID && peer.view?.directory) || (peer.activeSessionID === sessionID && peer.activeDirectory)
-          })?.view?.directory || [...state.clients.values()].find((peer) => {
-            return peer.activeSessionID === sessionID && peer.activeDirectory
-          })?.activeDirectory || null
-          if (sessionID && directory) {
-            invalidateSessionMessageCaches(state, directory, sessionID, 80)
+          const promptDirectory = requestDirectory(client, reqUrl, ctx.refererView?.directory) || promptDirectoryHint || headerDirectory || null
+          if (sessionID && promptDirectory) {
+            invalidateSessionMessageCaches(state, promptDirectory, sessionID, 80)
             for (const peer of state.clients.values()) {
               const peerSessionID = peer.view?.sessionID || peer.activeSessionID
               const peerDirectory = peer.view?.directory || peer.activeDirectory
-              if (peerSessionID !== sessionID || peerDirectory !== directory) continue
+              if (peerSessionID !== sessionID || peerDirectory !== promptDirectory) continue
               peer.submitPendingSessionID = sessionID
-              peer.submitPendingDirectory = directory
-              peer.submitPendingHead = messageHead(state, directory, sessionID, 80)
+              peer.submitPendingDirectory = promptDirectory
+              peer.submitPendingHead = messageHead(state, promptDirectory, sessionID, 80)
               peer.localSubmitUntil = Date.now() + 8000
               setSyncState(peer, "stale", "peer-submit", peer.lastAction || "noop")
               emitTargetEvent(state.target, "sync-stale", {
                 client: peer.id,
                 sessionID,
-                directory,
+                directory: promptDirectory,
                 reason: "peer-submit",
                 action: peer.lastAction || "noop",
                 state: peer.syncState,
@@ -427,7 +435,7 @@ function proxyRequest(ctx, req, res) {
       if (promptRequest && !directory) {
         upstream.destroy()
         setLastReason(state, client, "prompt-directory-missing")
-        json(res, 400, { error: "Current workspace/session authority is missing. Refresh the page and try again." }, relayHeaders(priority, "error", "prompt-directory-missing"))
+        json(res, 400, { error: "Current workspace authority is missing. Relayer no longer guesses directory from referer, active view, or peer clients. Retry from the correct workspace or send an explicit directory." }, relayHeaders(priority, "error", "prompt-directory-missing"))
         return
       }
       req.on("data", (chunk) => upstream.write(chunk))

@@ -3,7 +3,7 @@
 const { json, withRelay, relayHeaders, runtimeHeaders } = require("../http")
 const { launchPage } = require("../pages")
 const { clientSafeMode, clearLastReason, setLastReason, warmBusy, backgroundWarmPaused, syncAction, syncClientView, targetAdmission, setClientView } = require("../state")
-const { syncWarm, warm, refresh, metaEnvelope } = require("../warm")
+const { syncWarm, warm, refresh, metaEnvelope, ensureEnterReady, fetchJson } = require("../warm")
 const { classifyError, isMobile, validClient, encodeDir } = require("../util")
 const { targetCookie } = require("../context")
 const { subscribeTarget } = require("../sync/bus")
@@ -19,6 +19,122 @@ function clearTargetCookie(res) {
 
 function handoffLocation(target, launch) {
   return `/${launch.directory}/session/${encodeURIComponent(launch.sessionID)}?host=${encodeURIComponent(target.host)}&port=${encodeURIComponent(target.port)}&client=${encodeURIComponent(launch.client)}`
+}
+
+function handoffStore(state) {
+  if (!state.handoffTickets) state.handoffTickets = new Map()
+  const now = Date.now()
+  for (const [key, ticket] of state.handoffTickets.entries()) {
+    if (!ticket || (ticket.expiresAt && ticket.expiresAt <= now)) state.handoffTickets.delete(key)
+  }
+  return state.handoffTickets
+}
+
+function handoffTicketPayload(ticket) {
+  if (!ticket) return null
+  return {
+    ok: ticket.status !== "failed" && ticket.status !== "expired",
+    ticket: ticket.id,
+    target: ticket.target,
+    client: ticket.clientID,
+    directory: ticket.directory,
+    sessionID: ticket.sessionID,
+    status: ticket.status,
+    stage: ticket.stage,
+    launchReady: ticket.status === "ready",
+    launch: ticket.resolved || null,
+    error: ticket.error || null,
+    createdAt: ticket.createdAt,
+    expiresAt: ticket.expiresAt,
+  }
+}
+
+function createHandoffTicket(state, client, target, decision) {
+  const id = `t_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`
+  const ticket = {
+    id,
+    target,
+    clientID: client.id,
+    directory: decision.directory,
+    sessionID: decision.sessionID,
+    status: "pending",
+    stage: "selected",
+    error: null,
+    resolved: null,
+    createdAt: Date.now(),
+    expiresAt: Date.now() + 2 * 60 * 1000,
+  }
+  handoffStore(state).set(id, ticket)
+  return ticket
+}
+
+async function resolveHandoffTicket(state, client, target, ticket, snapshotCount, config) {
+  if (!ticket) return null
+  if (ticket.expiresAt <= Date.now()) {
+    ticket.status = "expired"
+    ticket.stage = "expired"
+    ticket.error = "Handoff ticket expired. Return to the landing page and choose the session again."
+    ticket.resolved = null
+    return ticket
+  }
+  if (ticket.status === "ready" || ticket.status === "failed") return ticket
+  if (ticket.clientID !== client.id) {
+    ticket.status = "failed"
+    ticket.stage = "failed"
+    ticket.error = "Handoff ticket belongs to a different client session."
+    ticket.resolved = null
+    return ticket
+  }
+  ticket.stage = "connect"
+  try {
+    await warm(state, client, false, { snapshotCount }, config)
+  } catch {}
+  if (state.offline || state.targetStatus === "offline") {
+    ticket.status = "failed"
+    ticket.stage = "failed"
+    ticket.error = state.offlineReason || state.failureReason || "Target is currently unavailable."
+    ticket.resolved = null
+    return ticket
+  }
+  ticket.stage = "bootstrap"
+  const selected = { id: ticket.sessionID, directory: ticket.directory }
+  const ready = await ensureEnterReady(state, target, selected, config)
+  if (!ready) {
+    ticket.status = "failed"
+    ticket.stage = "failed"
+    ticket.error = state.enterReadyReason || "Selected session is not ready for attach."
+    ticket.resolved = null
+    return ticket
+  }
+  ticket.status = "ready"
+  ticket.stage = "ready"
+  ticket.error = null
+  ticket.resolved = {
+    directory: encodeDir(ticket.directory),
+    sessionID: ticket.sessionID,
+    client: client.id,
+  }
+  return ticket
+}
+
+function readJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = []
+    req.on("data", (chunk) => chunks.push(chunk))
+    req.on("end", () => {
+      const raw = Buffer.concat(chunks).toString("utf8")
+      if (!raw) {
+        resolve({})
+        return
+      }
+      try {
+        resolve(JSON.parse(raw))
+      } catch (err) {
+        reject(err)
+      }
+    })
+    req.on("error", reject)
+  })
 }
 
 function progressPayload(state, client) {
@@ -240,6 +356,32 @@ function modezPayload(states) {
   }
 }
 
+function checkPayload(state, target, health, latencyMs) {
+  const cached = state.meta || null
+  const latest = cached?.sessions?.latest || null
+  return {
+    target,
+    source: { kind: "cli", label: "Global CLI service" },
+    health: {
+      ok: Boolean(health?.healthy === true),
+      healthy: health?.healthy === true,
+      version: health?.version || null,
+      latencyMs: typeof latencyMs === "number" ? latencyMs : null,
+      error: health?.healthy === true ? null : (health?.error || state.failureReason || state.offlineReason || "Target unreachable"),
+    },
+    latest,
+    cache: {
+      source: "router",
+      cachedAt: state.metaAt || 0,
+      warm: Boolean(state.meta),
+    },
+    targetType: state.targetType,
+    targetStatus: state.targetStatus,
+    admission: state.admission,
+    ready: Boolean(cached?.ready),
+  }
+}
+
 async function resolveLaunch(state, client, snapshotCount, config) {
   const current = progressPayload(state, client)
   if (current.launchReady && current.launch) return current
@@ -303,6 +445,7 @@ function handleControl(ctx, req, res, states) {
       const sessionID = reqUrl.searchParams.get("sessionID")
       const directory = reqUrl.searchParams.get("directory")
       const allowOverride = Boolean(config.enableProgressQueryOverride)
+      const requestedOverride = Boolean(sessionID || directory)
       const override = allowOverride && sessionID && directory
       if (override) {
         setClientView(client, { sessionID, directory, pathname: null })
@@ -316,7 +459,7 @@ function handleControl(ctx, req, res, states) {
         withRelay(
           {
             ...(cookieHeader || {}),
-            "X-OC-Progress-Override": override ? "applied" : (sessionID || directory ? "ignored" : "none"),
+            "X-OC-Progress-Override": override ? "applied" : (requestedOverride ? (allowOverride ? "ignored" : "disabled") : "none"),
           },
           "foreground",
           "control",
@@ -327,6 +470,76 @@ function handleControl(ctx, req, res, states) {
       setLastReason(state, client, "warm-failed")
       json(res, 502, { error: classifyError(err, "Warm failed") }, relayHeaders("foreground", "error", "warm-failed"))
     }
+    return
+  }
+
+  if (ctx.controlRoute === "/check") {
+    const run = async () => {
+      try {
+        const checkTimeoutMs = Number(process.env.OPENCODE_ROUTER_CHECK_TIMEOUT_MS || 1800)
+        const health = await fetchJson(target, "/global/health", {
+          ...(config || {}),
+          inspectTimeoutMs: Number.isFinite(checkTimeoutMs) && checkTimeoutMs > 0 ? checkTimeoutMs : 1800,
+        })
+        state.offline = health.data?.healthy !== true
+        state.offlineReason = health.data?.healthy === true ? null : "OpenCode unhealthy"
+        state.failureReason = state.offlineReason
+        state.targetStatus = health.data?.healthy === true ? "healthy" : "unhealthy"
+        state.admission = targetAdmission(state)
+        clearLastReason(state, client)
+        json(res, 200, checkPayload(state, target, health.data, health.latencyMs), relayHeaders("foreground", "control", "check"))
+      } catch (err) {
+        state.offline = true
+        state.offlineReason = classifyError(err, "Target check failed")
+        state.failureReason = state.offlineReason
+        state.targetStatus = "offline"
+        state.admission = targetAdmission(state)
+        setLastReason(state, client, "target-check-failed")
+        json(res, 200, checkPayload(state, target, null, null), relayHeaders("foreground", "fallback", "check-failed"))
+      }
+    }
+    run()
+    return
+  }
+
+  if (ctx.controlRoute === "/handoff") {
+    const run = async () => {
+      const store = handoffStore(state)
+      if (req.method === "POST") {
+        let body = {}
+        try {
+          body = await readJsonBody(req)
+        } catch {
+          json(res, 400, { error: "Invalid handoff ticket payload" }, relayHeaders("foreground", "error", "handoff-invalid-json"))
+          return
+        }
+        const directory = String(body.directory || "")
+        const sessionID = String(body.sessionID || "")
+        if (!directory || !sessionID) {
+          json(res, 400, { error: "Explicit directory and sessionID are required to create a handoff ticket." }, relayHeaders("foreground", "error", "handoff-missing-selection"))
+          return
+        }
+        const ticket = createHandoffTicket(state, client, target, { directory, sessionID })
+        clearLastReason(state, client)
+        json(res, 200, handoffTicketPayload(ticket), relayHeaders("foreground", "control", "handoff-created"))
+        return
+      }
+      const ticketID = reqUrl.searchParams.get("ticket") || ""
+      if (!ticketID) {
+        json(res, 400, { error: "Missing handoff ticket id." }, relayHeaders("foreground", "error", "handoff-missing-id"))
+        return
+      }
+      const ticket = store.get(ticketID)
+      if (!ticket) {
+        json(res, 404, { error: "Handoff ticket not found or expired." }, relayHeaders("foreground", "error", "handoff-missing"))
+        return
+      }
+      await resolveHandoffTicket(state, client, target, ticket, snapshotCount, config)
+      const payload = handoffTicketPayload(ticket)
+      const status = ticket.status === "failed" || ticket.status === "expired" ? 409 : 200
+      json(res, status, payload, relayHeaders("foreground", "control", ticket.status === "ready" ? "handoff-ready" : ticket.status === "pending" ? "handoff-pending" : "handoff-failed"))
+    }
+    run()
     return
   }
 
@@ -354,15 +567,41 @@ function handleControl(ctx, req, res, states) {
 
   if (ctx.controlRoute === "/launch") {
     const run = async () => {
-      const payload = await resolveLaunch(state, client, snapshotCount, config)
+      let ticketID = reqUrl.searchParams.get("ticket") || ""
+      const explicitDirectory = String(reqUrl.searchParams.get("directory") || "")
+      const explicitSessionID = String(reqUrl.searchParams.get("sessionID") || "")
+      let payload
+      if (!ticketID && explicitDirectory && explicitSessionID) {
+        const ticket = createHandoffTicket(state, client, target, { directory: explicitDirectory, sessionID: explicitSessionID })
+        ticketID = ticket.id
+      }
+      if (ticketID) {
+        const ticket = handoffStore(state).get(ticketID)
+        if (ticket) {
+          await resolveHandoffTicket(state, client, target, ticket, snapshotCount, config)
+          payload = handoffTicketPayload(ticket)
+        } else {
+          payload = {
+            ok: false,
+            ticket: ticketID,
+            status: "expired",
+            stage: "expired",
+            launchReady: false,
+            launch: null,
+            error: "Handoff ticket not found or expired.",
+          }
+        }
+      } else {
+        payload = await resolveLaunch(state, client, snapshotCount, config)
+      }
       if (wantCookie) setTargetCookie(res, target)
       clearLastReason(state, client)
       res.writeHead(200, withRelay(
         { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
         "foreground", "control",
-        payload.resumeSafeMode ? "resume-safe-launch-page" : payload.launchReady ? "launch-gate-ready" : "launch-gate",
+        ticketID ? (payload.launchReady ? "handoff-launch-ready" : payload.status === "failed" || payload.status === "expired" ? "handoff-launch-failed" : "handoff-launch") : (payload.resumeSafeMode ? "resume-safe-launch-page" : payload.launchReady ? "launch-gate-ready" : "launch-gate"),
       ))
-      res.end(launchPage(target, client.id, payload, config))
+      res.end(launchPage({ ...target, ticket: ticketID || null, directory: explicitDirectory || null, sessionID: explicitSessionID || null }, client.id, payload, config))
     }
     run()
     return

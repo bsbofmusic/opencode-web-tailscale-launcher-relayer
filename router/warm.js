@@ -51,10 +51,19 @@ function requestText(target, path, headers, config) {
   const cfg = config || defaults
   return new Promise((resolve, reject) => {
     const start = Date.now()
+    let settled = false
+    let absoluteTimer = null
+    let req
     const base = headers || { Accept: "application/json" }
     const auth = upstreamAuth()
     if (auth && !base.Authorization && !base.authorization) base.Authorization = auth
-    const req = http.request(
+    const fail = (err) => {
+      if (settled) return
+      settled = true
+      clearTimeout(absoluteTimer)
+      reject(err)
+    }
+    req = http.request(
       {
         hostname: target.host,
         port: Number(target.port),
@@ -67,6 +76,9 @@ function requestText(target, path, headers, config) {
         const chunks = []
         res.on("data", (chunk) => chunks.push(chunk))
         res.on("end", () => {
+          if (settled) return
+          settled = true
+          clearTimeout(absoluteTimer)
           const body = Buffer.concat(chunks).toString("utf8")
           if ((res.statusCode || 500) >= 400) {
             reject(new Error(`Upstream returned ${res.statusCode || 500}`))
@@ -76,10 +88,25 @@ function requestText(target, path, headers, config) {
         })
       },
     )
-    req.setTimeout(cfg.inspectTimeoutMs, () => {
-      req.destroy(new Error(`Timed out after ${cfg.inspectTimeoutMs}ms`))
+    absoluteTimer = setTimeout(() => {
+      const err = new Error(`Timed out after ${cfg.inspectTimeoutMs}ms`)
+      req.destroy(err)
+      fail(err)
+    }, cfg.inspectTimeoutMs)
+    req.on("socket", (socket) => {
+      socket.setTimeout(cfg.inspectTimeoutMs)
+      socket.on("timeout", () => {
+        const err = new Error(`Timed out after ${cfg.inspectTimeoutMs}ms`)
+        req.destroy(err)
+        fail(err)
+      })
     })
-    req.on("error", reject)
+    req.setTimeout(cfg.inspectTimeoutMs, () => {
+      const err = new Error(`Timed out after ${cfg.inspectTimeoutMs}ms`)
+      req.destroy(err)
+      fail(err)
+    })
+    req.on("error", fail)
     req.end()
   })
 }
@@ -880,6 +907,7 @@ module.exports = {
   requestText,
   fetchJson,
   fetchJsonWith,
+  ensureEnterReady,
   buildWorkspaceRoots,
   projectInventory,
   buildSessionIndex,

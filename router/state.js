@@ -536,7 +536,7 @@ function rememberActiveSession(client, reqUrl) {
 }
 
 function requestDirectory(client, reqUrl, hintDirectory) {
-  return reqUrl.searchParams.get("directory") || hintDirectory || client?.view?.directory || client?.activeDirectory || ""
+  return reqUrl.searchParams.get("directory") || ""
 }
 
 function messageBypass(state, client, directory, sessionID, limit) {
