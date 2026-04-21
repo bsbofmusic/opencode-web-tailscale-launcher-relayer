@@ -528,14 +528,20 @@ function compatBootstrapRuntime(targetExpr, metaExpr) {
       const inventory = compatInventory(meta)
       const inventoryByRoot = new Map(inventory.map(function (item) { return [String(item.worktree || '').toLowerCase(), item] }))
       const currentKey = compatServerKey()
-      const server = compatRead(serverKey, {}) || {}
-      const projects = { ...(server.projects || {}) }
+      const projects = {}
       projects[currentKey] = roots.map(function (root) {
         return compatProjectEntry(root, inventoryByRoot.get(String(root).toLowerCase()))
       }).filter(Boolean)
-      compatWrite(serverKey, { ...server, projects })
-      const globalSync = compatRead(globalProjectKey, {}) || {}
-      compatWrite(globalProjectKey, { ...globalSync, value: inventory.filter(function (item) { return roots.includes(item.worktree) }) })
+      const latestDirectory = meta?.sessions?.latest?.directory || ''
+      const latestRoot = roots.includes(latestDirectory) ? latestDirectory : (roots[0] || '')
+      compatWrite(serverKey, {
+        list: [],
+        projects,
+        lastProject: latestRoot ? { [currentKey]: latestRoot } : {},
+      })
+      compatWrite(globalProjectKey, {
+        value: inventory.filter(function (item) { return roots.includes(item.worktree) })
+      })
       try { localStorage.setItem(defaultServerKey, location.origin) } catch {}
       compatWrite(compatTargetKey, { host: compatTarget.host, port: compatTarget.port })
     }
@@ -655,8 +661,10 @@ function launchPage(target, clientID, initial) {
       )
     }
     function seed(meta) {
-      const workspaceRoots = ((meta.projects && meta.projects.roots) || []).filter(function (root) {
-        return root !== '/' && !(root && root.length === 1 && root.charCodeAt(0) === 92)
+      const workspaceRoots = ((meta.projects && meta.projects.inventory) || []).map(function (item) {
+        return item && item.worktree ? item.worktree : ''
+      }).filter(function (root) {
+        return root && root !== '/' && !(root.length === 1 && root.charCodeAt(0) === 92)
       })
       sessionStorage.setItem(clientKey, target.client)
       sessionStorage.setItem(snapshotKey, JSON.stringify({ cachedAt: Date.now(), source: 'vps', target: target, workspaceRoots }))

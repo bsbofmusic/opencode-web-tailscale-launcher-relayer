@@ -68,7 +68,7 @@ async function main() {
   const create = await request(
     `${base}/session?host=${encodeURIComponent(host)}&port=${encodeURIComponent(port)}&directory=${encodeURIComponent(directory)}`,
     "POST",
-    JSON.stringify({ title: `safe-auto-refresh-${Date.now()}` }),
+    JSON.stringify({ title: `source-boundary-${Date.now()}` }),
     { "content-type": "application/json" },
   )
   if (create.status >= 400) throw new Error(`create-session-failed ${create.status} ${create.body}`)
@@ -80,46 +80,56 @@ async function main() {
   const context = await browser.newContext()
   const page = await context.newPage()
   try {
-    const browserClient = `c_browser_${Date.now().toString(36)}`
-    const sessionUrl = `${base}/${encodeDir(directory)}/session/${encodeURIComponent(sessionID)}?host=${encodeURIComponent(host)}&port=${encodeURIComponent(port)}&client=${encodeURIComponent(browserClient)}`
-    const launchUrl = `${base}/__oc/launch?host=${encodeURIComponent(host)}&port=${encodeURIComponent(port)}&directory=${encodeURIComponent(directory)}&sessionID=${encodeURIComponent(sessionID)}&client=${encodeURIComponent(browserClient)}`
-    const navigations = []
-    page.on("framenavigated", (frame) => {
-      if (frame === page.mainFrame()) navigations.push({ url: frame.url(), at: Date.now() })
+    await page.goto(`${base}/`, { waitUntil: "domcontentloaded", timeout: 30000 })
+    await page.evaluate(() => {
+    localStorage.setItem("opencode.global.dat:server", JSON.stringify({
+      projects: {
+        [location.origin]: [
+          { id: "desktop-fake", worktree: "C:\\Users\\Fake\\Desktop", sandboxes: [] },
+          { id: "relay:FAKE", worktree: "E:\\FAKE", sandboxes: [] },
+        ],
+      },
+      lastProject: { [location.origin]: "C:\\Users\\Fake\\Desktop" },
+    }))
+    localStorage.setItem("opencode.global.dat:globalSync.project", JSON.stringify({
+      value: [
+        { id: "desktop-fake", worktree: "C:\\Users\\Fake\\Desktop", sandboxes: [] },
+        { id: "relay:FAKE", worktree: "E:\\FAKE", sandboxes: [] },
+      ],
+    }))
+    localStorage.setItem("opencode.settings.dat:defaultServerUrl", "http://desktop-invalid")
     })
+
+    const client = `c_boundary_${Date.now().toString(36)}`
+    const launchUrl = `${base}/__oc/launch?host=${encodeURIComponent(host)}&port=${encodeURIComponent(port)}&directory=${encodeURIComponent(directory)}&sessionID=${encodeURIComponent(sessionID)}&client=${encodeURIComponent(client)}`
+    const sessionUrl = `${base}/${encodeDir(directory)}/session/${encodeURIComponent(sessionID)}?host=${encodeURIComponent(host)}&port=${encodeURIComponent(port)}&client=${encodeURIComponent(client)}`
     await page.goto(launchUrl, { waitUntil: "domcontentloaded", timeout: 30000 })
-    const entryDeadline = Date.now() + 30000
-    while (Date.now() < entryDeadline) {
+    const deadline = Date.now() + 30000
+    while (Date.now() < deadline) {
       if (page.url() === sessionUrl) break
       await page.waitForTimeout(500)
     }
     if (page.url() !== sessionUrl) throw new Error(`launch-did-not-enter-session ${page.url()}`)
-    await page.waitForTimeout(4000)
-    const baselineNavigations = navigations.length
-    const probeText = `auto refresh probe ${Date.now()}`
-    const send = await request(
-      `${base}/session/${encodeURIComponent(sessionID)}/prompt_async?host=${encodeURIComponent(host)}&port=${encodeURIComponent(port)}&directory=${encodeURIComponent(directory)}`,
-      "POST",
-      JSON.stringify({ parts: [{ type: "text", text: probeText }] }),
-      { "content-type": "application/json" },
-    )
-    if (send.status >= 400) throw new Error(`prompt-failed ${send.status} ${send.body}`)
-
-    let visible = false
-    const deadline = Date.now() + Number(env("TAILNET_AUTO_REFRESH_TIMEOUT_MS", "20000"))
-    while (Date.now() < deadline) {
-      if (navigations.length > baselineNavigations) break
-      const body = await page.locator('body').innerText().catch(() => "")
-      if (body.includes(probeText)) {
-        visible = true
-        break
-      }
-      await page.waitForTimeout(500)
+    await page.waitForTimeout(3000)
+    const state = await page.evaluate(() => {
+    const parse = (key) => {
+      try { return JSON.parse(localStorage.getItem(key) || "null") } catch { return null }
     }
-    const lastUrl = page.url()
-    const refreshed = navigations.length > baselineNavigations && lastUrl === sessionUrl
-    const ok = refreshed || visible
-    console.log(JSON.stringify({ sessionID, baselineNavigations, navigations, lastUrl, refreshed, visible, ok }, null, 2))
+    return {
+      origin: location.origin,
+      serverKey: (location.hostname === '127.0.0.1' || location.hostname === 'localhost') ? 'local' : location.origin,
+      server: parse("opencode.global.dat:server"),
+      globalProject: parse("opencode.global.dat:globalSync.project"),
+      defaultServer: localStorage.getItem("opencode.settings.dat:defaultServerUrl"),
+    }
+    })
+
+    const projects = (((state.server || {}).projects || {})[state.serverKey] || [])
+    const globalValue = (((state.globalProject || {}).value) || [])
+    const badProject = projects.find((item) => item?.id === "desktop-fake" || String(item?.id || "").startsWith("relay:"))
+    const badGlobal = globalValue.find((item) => item?.id === "desktop-fake" || String(item?.id || "").startsWith("relay:"))
+    const ok = projects.length > 0 && !badProject && !badGlobal && state.defaultServer === state.origin
+    console.log(JSON.stringify({ sessionID, origin: state.origin, serverKey: state.serverKey, projects, globalValue, defaultServer: state.defaultServer, ok }, null, 2))
     if (!ok) process.exitCode = 1
   } finally {
     try { await browser.close() } catch {}
